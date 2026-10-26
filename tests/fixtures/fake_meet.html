@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Fake Meet</title>
+</head>
+<body>
+  <section id="prejoin">
+    <label>Your name <input aria-label="Your name" /></label>
+    <button type="button" data-toggle="media" aria-label="Turn off microphone">Mic</button>
+    <button type="button" data-toggle="media" aria-label="Turn off camera">Camera</button>
+    <button type="button" id="join-now">Join now</button>
+  </section>
+  <section id="incall" hidden>
+    <button type="button" id="call-mic" aria-label="Turn off microphone">Mic</button>
+    <button type="button" id="call-cam" aria-label="Turn off camera">Camera</button>
+    <button type="button" aria-label="Leave call">Leave</button>
+    <button type="button" aria-label="Chat with everyone">Chat</button>
+    <div data-ba-chat-log="true">
+      <div data-chat-message="1" data-sender="Sara">Hello team</div>
+      <div data-chat-message="2">Still talking</div>
+      <div data-chat-message="3" data-sender="You">Hi from the bot</div>
+    </div>
+    <textarea aria-label="Send a message to everyone"></textarea>
+    <button type="button" id="captions-btn" aria-label="Turn on captions">CC</button>
+    <div data-participant-id="sara"></div>
+    <div data-participant-id="bot" data-self="true"></div>
+  </section>
+  <script>
+    document.querySelectorAll("#prejoin [data-toggle='media']").forEach((button) => {
+      button.addEventListener("click", () => {
+        const label = button.getAttribute("aria-label") || "";
+        if (!label.startsWith("Turn off")) return;
+        const next = label.replace("Turn off", "Turn on");
+        button.setAttribute("aria-label", next);
+        const target = label.includes("microphone") ? "call-mic" : "call-cam";
+        document.getElementById(target).setAttribute("aria-label", next);
+      });
+    });
+    document.getElementById("join-now").addEventListener("click", () => {
+      document.getElementById("prejoin").hidden = true;
+      const call = document.getElementById("incall");
+      call.hidden = false;
+      call.setAttribute("data-ba-in-call", "true");
+    });
+    const box = document.querySelector('[aria-label="Send a message to everyone"]');
+    box.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        const text = box.value.trim();
+        box.value = "";
+        if (!text) return;
+        const node = document.createElement("div");
+        node.setAttribute("data-chat-message", String(Date.now()));
+        node.setAttribute("data-sender", "You");
+        node.textContent = text;
+        document.querySelector("[data-ba-chat-log]").appendChild(node);
+      }
+    });
+    document.getElementById("captions-btn").addEventListener("click", () => {
+      const button = document.getElementById("captions-btn");
+      button.setAttribute("aria-label", "Turn off captions");
+      let region = document.getElementById("captions");
+      if (!region) {
+        region = document.createElement("div");
+        region.id = "captions";
+        region.setAttribute("role", "region");
+        region.setAttribute("aria-label", "Captions");
+        region.setAttribute("data-ba-captions", "true");
+        document.getElementById("incall").appendChild(region);
+      }
+      region.hidden = false;
+    });
+  </script>
+</body>
+</html>

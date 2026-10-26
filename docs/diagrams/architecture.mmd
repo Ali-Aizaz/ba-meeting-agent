@@ -1,0 +1,34 @@
+flowchart TD
+  meet[Google Meet]
+  captions[Captions and chat]
+  wake[Hey BA]
+  knowledge[Local car knowledge]
+  searchCars[search_cars]
+  openai[OpenAI web_search]
+  reply[Chat reply]
+  summaryPage[Notion summary]
+  taskDb[Notion tasks]
+
+  meet --> captions
+  captions --> wake
+  wake --> knowledge
+  knowledge --> reply
+  wake --> searchCars
+  searchCars -->|car question| openai
+  openai --> reply
+  captions --> taskDb
+  wake --> summaryPage
+
+  decisions[Decisions Requirements Risks]
+  bom[BOM and compare]
+  platform[Second meeting platform]
+  voice[Voice via a TTS API]
+  memory[Memory across past meetings]
+  dataflow[Transcript stays out of web search]
+
+  summaryPage -.-> decisions
+  reply -.-> bom
+  meet -.-> platform
+  reply -.-> voice
+  summaryPage -.-> memory
+  searchCars -.-> dataflow

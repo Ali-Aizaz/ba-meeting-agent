@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TechSol BA — system architecture</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #ffffff;
+      --text: #1c1c1c;
+      --muted: #5e5e5e;
+      --faint: #8a8a8a;
+      --line: #d4d4d4;
+      --line-strong: #8d8d8d;
+      --accent: #0b57d0;
+      --fill: #eef3fb;
+      --elev: #f7f7f7;
+      --callout: #f3f6fb;
+      --box: 180px;
+      --link: 36px;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #161616;
+        --text: #f2f2f2;
+        --muted: #b5b5b5;
+        --faint: #8e8e8e;
+        --line: #3a3a3a;
+        --line-strong: #9a9a9a;
+        --accent: #9ec1ff;
+        --fill: #243044;
+        --elev: #222222;
+        --callout: #1d2430;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 16px/1.45 ui-sans-serif, system-ui, sans-serif;
+    }
+    main {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 28px 20px 64px;
+    }
+    h1 { font-size: 24px; font-weight: 500; margin: 0 0 8px; }
+    h2 { font-size: 18px; font-weight: 500; margin: 0; }
+    h3 { font-size: 15px; font-weight: 500; margin: 0; }
+    p { margin: 0; }
+    .lede { color: var(--muted); max-width: 68ch; }
+    .views { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0; }
+    .views button, .clear {
+      font: inherit;
+      font-size: 13px;
+      border: 1px solid var(--line);
+      background: transparent;
+      color: var(--text);
+      border-radius: 999px;
+      padding: 4px 10px;
+      cursor: pointer;
+    }
+    .views button[aria-pressed="true"] {
+      background: var(--text);
+      color: var(--bg);
+      border-color: var(--text);
+    }
+    .frame {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .frame-head, .legend, .detail-head, .tools-note {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .lane-head {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 2px;
+      margin-bottom: 8px;
+    }
+    .lead { font-weight: 500; max-width: 70ch; }
+    .legend { gap: 16px; color: var(--muted); font-size: 13px; }
+    .swatch {
+      width: 14px;
+      height: 10px;
+      border: 1px solid var(--line-strong);
+      border-radius: 2px;
+      display: inline-block;
+      margin-right: 6px;
+      vertical-align: -1px;
+      background: var(--elev);
+    }
+    .swatch.dashed { border-style: dashed; }
+    .scroll { overflow-x: auto; margin-top: 16px; }
+    .sheet { min-width: 760px; display: flex; flex-direction: column; gap: 18px; }
+    .hint, .bridge, .source, .boundary-note { color: var(--muted); font-size: 13px; }
+    .boundary-note { display: none; margin-top: 6px; font-size: 11px; color: var(--faint); }
+    body[data-view="boundary"] .boundary-note { display: block; }
+    body[data-view="boundary"] .node.hot .boundary-note { color: var(--accent); }
+    .row { display: flex; align-items: center; }
+    .box { width: var(--box); flex: 0 0 auto; }
+    .hang { width: var(--box); margin-left: calc(var(--box) + var(--link)); }
+    .node {
+      display: block;
+      width: 100%;
+      text-align: left;
+      font: inherit;
+      color: var(--text);
+      background: var(--elev);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px 10px;
+      cursor: pointer;
+    }
+    .node strong { display: block; font-size: 13px; font-weight: 500; line-height: 1.3; }
+    .node span.sub { display: block; margin-top: 2px; font-size: 12px; line-height: 1.35; color: var(--muted); }
+    .node.ext { border-style: dashed; }
+    .node.hot, .node.on { border-color: var(--accent); }
+    .node.on { background: var(--fill); }
+    .node.dim { opacity: 0.45; }
+    .link, .branch { color: var(--line-strong); }
+    .link { width: var(--link); flex: 0 0 auto; text-align: center; }
+    .link svg, .branch { display: block; }
+    .branch { width: 1px; height: 16px; margin: 2px auto; background: var(--line-strong); }
+    .link.hot, .branch.hot { color: var(--accent); }
+    .branch.hot { background: var(--accent); }
+    .link.quiet, .branch.quiet { opacity: 0.28; }
+    .rule { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
+    .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    .callout {
+      margin-top: 16px;
+      padding: 12px 14px;
+      background: var(--callout);
+      border-radius: 6px;
+    }
+    .callout h2 { font-size: 14px; margin-bottom: 6px; }
+    .detail { margin-top: 22px; display: flex; flex-direction: column; gap: 8px; max-width: 75ch; }
+    .detail p + p { margin-top: 8px; }
+    .detail[hidden], .detail-block[hidden] { display: none; }
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 14px; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { font-weight: 500; font-size: 13px; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em; }
+    .source { margin-top: 8px; }
+    @media (max-width: 720px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body data-view="system">
+  <main>
+    <h1>TechSol BA</h1>
+    <p class="lede">A bot that joins Google Meet, keeps a caption transcript, answers “Hey BA” in chat, and saves a summary plus tasks to Notion.</p>
+
+    <div class="views" role="group" aria-label="Highlight a path">
+      <button type="button" data-view-btn="system" aria-pressed="true">Whole system</button>
+      <button type="button" data-view-btn="reply" aria-pressed="false">Hey BA reply</button>
+      <button type="button" data-view-btn="task" aria-pressed="false">Overheard task</button>
+      <button type="button" data-view-btn="save" aria-pressed="false">Save and leave</button>
+      <button type="button" data-view-btn="boundary" aria-pressed="false">What leaves</button>
+    </div>
+
+    <section class="frame" aria-label="TechSol BA architecture">
+      <div class="frame-head">
+        <p class="lead" id="lead">Two loops share one caption transcript. “Hey BA” is answered in chat. A complete overheard task is written to Notion without a wake phrase.</p>
+        <div class="legend">
+          <span><i class="swatch"></i>Built</span>
+          <span><i class="swatch dashed"></i>Not built</span>
+        </div>
+      </div>
+
+      <div class="scroll">
+        <div class="sheet">
+          <section>
+            <div class="lane-head">
+              <h3>In the call</h3>
+              <p class="hint">One browser. Captions are Meet’s own transcript.</p>
+            </div>
+            <div class="row">
+              <div class="box"><button type="button" class="node" data-id="adapter" data-hot="reply task save" data-boundary="false"><strong>Meet adapter</strong><span class="sub">Playwright · TechSol BA</span><span class="boundary-note">Stays on the server</span></button></div>
+              <div class="link" data-from="adapter" data-to="meet" aria-hidden="true"></div>
+              <div class="box"><button type="button" class="node" data-id="meet" data-hot="reply task save" data-boundary="false"><strong>Google Meet</strong><span class="sub">People speak and type</span><span class="boundary-note">The call itself</span></button></div>
+              <div class="link" data-from="meet" data-to="captions" aria-hidden="true"></div>
+              <div class="box"><button type="button" class="node" data-id="captions" data-hot="reply task save" data-boundary="false"><strong>Caption line</strong><span class="sub">Speaker, text, [mm:ss]</span><span class="boundary-note">Stays on the server</span></button></div>
+            </div>
+            <div class="hang">
+              <div class="branch" data-from="meet" data-to="chat" aria-hidden="true"></div>
+              <button type="button" class="node" data-id="chat" data-hot="reply save" data-boundary="false"><strong>Chat message</strong><span class="sub">Typed in the meeting</span><span class="boundary-note">Stays on the server</span></button>
+            </div>
+          </section>
+
+          <section>
+            <div class="lane-head">
+              <h3>Addressed loop</h3>
+              <p class="hint">Quiet until someone says “Hey BA”.</p>
+            </div>
+            <div class="row">
+              <div class="box"><button type="button" class="node" data-id="wake" data-hot="reply save" data-boundary="false"><strong>Wake phrase</strong><span class="sub">From a caption or chat line</span><span class="boundary-note">Stays on the server</span></button></div>
+              <div class="link" data-from="wake" data-to="agent" aria-hidden="true"></div>
+              <div class="box"><button type="button" class="node" data-id="agent" data-hot="reply save" data-boundary="true"><strong>Agent loop</strong><span class="sub">Persona, digest, tools</span><span class="boundary-note">Sends the digest and the question</span></button></div>
+              <div class="link" data-from="agent" data-to="guard" aria-hidden="true"></div>
+              <div class="box"><button type="button" class="node" data-id="guard" data-hot="reply" data-boundary="true"><strong>Guardrails</strong><span class="sub">Cite, or say not sure</span><span class="boundary-note">Blocks an uncited car fact</span></button></div>
+              <div class="link" data-from="guard" data-to="post" aria-hidden="true"></div>
+              <div class="box"><button type="button" class="node" data-id="post" data-hot="reply save" data-boundary="false"><strong>Chat reply</strong><span class="sub">post_chat · REPLY</span><span class="boundary-note">Answer goes back into the call</span></button></div>
+            </div>
+            <div class="hang">
+              <div class="branch" data-from="agent" data-to="knowledge" aria-hidden="true"></div>
+              <button type="button" class="node" data-id="knowledge" data-hot="reply" data-boundary="false"><strong>Knowledge base</strong><span class="sub">Read before web search</span><span class="boundary-note">Stays in the repo</span></button>
+            </div>
+          </section>
+
+          <p class="bridge">The same caption lines feed the loop below. It does not wait, and it does not block a reply.</p>
+
+          <section>
+            <div class="lane-head">
+              <h3>Background loop</h3>
+              <p class="hint">A complete task is written to Notion, then confirmed in chat.</p>
+            </div>
+            <div class="row">
+              <div class="box"><button type="button" class="node" data-id="extract" data-hot="task" data-boundary="true"><strong>Task extractor</strong><span class="sub">Caption lines, in the background</span><span class="boundary-note">Sends a caption window to the model</span></button></div>
+              <div class="link" data-from="extract" data-to="confirm" aria-hidden="true"></div>
+              <div class="box"><button type="button" class="node" data-id="confirm" data-hot="task" data-boundary="false"><strong>Confirmation</strong><span class="sub">Task added, or already tracked</span><span class="boundary-note">Confirmation goes back into the call</span></button></div>
+            </div>
+          </section>
+
+          <section>
+            <div class="lane-head">
+              <h3>This meeting</h3>
+              <p class="hint">Digest goes into the next reply. The full log is what save writes.</p>
+            </div>
+            <div class="row">
+              <div class="box"><button type="button" class="node" data-id="memory" data-hot="reply task save" data-boundary="false"><strong>Meeting memory</strong><span class="sub">SQLite · this meeting only</span><span class="boundary-note">Stays in SQLite on the server</span></button></div>
+              <div class="link" data-from="memory" data-to="save" aria-hidden="true"></div>
+              <div class="box"><button type="button" class="node" data-id="save" data-hot="save" data-boundary="true"><strong>save_meeting</strong><span class="sub">On request, and at the end</span><span class="boundary-note">Sends the notes to Notion</span></button></div>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <hr class="rule">
+
+      <section>
+        <div class="lane-head">
+          <h3>Services</h3>
+          <p class="hint">Web search stays off for task extraction and for the summary.</p>
+        </div>
+        <div class="grid">
+          <button type="button" class="node" data-id="openai" data-hot="reply task save" data-boundary="true"><strong>OpenAI</strong><span class="sub">Responses API · model from config</span><span class="boundary-note">Allowed model path</span></button>
+          <button type="button" class="node" data-id="web" data-hot="reply" data-boundary="true"><strong>Public web</strong><span class="sub">Car pages, fetched in</span><span class="boundary-note">Car question in, pages back</span></button>
+          <button type="button" class="node" data-id="notion" data-hot="task save" data-boundary="true"><strong>Notion</strong><span class="sub">Summary page and tasks</span><span class="boundary-note">Meeting record is stored here</span></button>
+        </div>
+      </section>
+
+      <hr class="rule">
+
+      <section>
+        <div class="lane-head">
+          <h3>Not built</h3>
+          <p class="hint">Drawn so the extension is visible. None of these run.</p>
+        </div>
+        <div class="grid">
+          <button type="button" class="node ext" data-id="zoom" data-hot="" data-boundary="false"><strong>Second platform</strong><span class="sub">Zoom or Teams adapter</span><span class="boundary-note">Not in this build</span></button>
+          <button type="button" class="node ext" data-id="voice" data-hot="" data-boundary="false"><strong>Voice reply</strong><span class="sub">Text-to-speech API</span><span class="boundary-note">Not in this build</span></button>
+          <button type="button" class="node ext" data-id="dbs" data-hot="" data-boundary="false"><strong>Decisions, Requirements, Risks</strong><span class="sub">More Notion databases</span><span class="boundary-note">Not in this build</span></button>
+          <button type="button" class="node ext" data-id="bom" data-hot="" data-boundary="false"><strong>BOM and compare</strong><span class="sub">Parts table, trade-offs</span><span class="boundary-note">Not in this build</span></button>
+          <button type="button" class="node ext" data-id="past" data-hot="" data-boundary="false"><strong>Past meetings</strong><span class="sub">Read earlier notes</span><span class="boundary-note">Not in this build</span></button>
+          <button type="button" class="node ext" data-id="rule" data-hot="" data-boundary="true"><strong>Data-flow rule</strong><span class="sub">Fetch car facts in</span><span class="boundary-note">The query is the car question</span></button>
+        </div>
+      </section>
+    </section>
+
+    <aside class="callout">
+      <h2>What may leave the meeting</h2>
+      <p>The knowledge base is ours. Public car pages are fetched in through OpenAI web search, and the query is only the car question. The transcript, participant list, and Notion contents are not placed in that query. The transcript does go to the model for a reply, for task extraction, and for the summary.</p>
+    </aside>
+
+    <section class="detail" id="detail" aria-live="polite">
+      <div class="detail-block" data-detail="">
+        <h2>How one meeting runs</h2>
+        <p>The adapter joins, posts consent, and turns captions on. Caption lines accumulate with speaker and meeting time.</p>
+        <p>“Hey BA” starts the addressed loop. Anything else stays quiet, except a complete overheard task, which is written and confirmed.</p>
+        <p>Save runs when asked and when the meeting ends. The bot leaves one minute after it is the last one in the call.</p>
+        <p class="hint">Select any box for what that part does.</p>
+      </div>
+      <div class="detail-block" data-detail="adapter" hidden>
+        <div class="detail-head"><h2>Meet adapter</h2><button type="button" class="clear">Whole meeting</button></div>
+        <p>Chromium runs headed under Xvfb on the cloud server, one meeting at a time. It joins Google Meet as TechSol BA (a saved sign-in, or a guest the host admits), with the mic and camera off. The first chat line is the consent notice. It turns captions on, leaves one minute after it is alone, and saves before it goes. Chat posts are allowed only for consent, a reply, a task confirmation, or the saved-notes link.</p>
+      </div>
+      <div class="detail-block" data-detail="meet" hidden>
+        <div class="detail-head"><h2>Google Meet</h2><button type="button" class="clear">Whole meeting</button></div>
+        <p>The only platform this build joins. Live captions are Meet’s own speech-to-text, drawn in the page for the participant who turns them on. There is no separate caption API. Chat is plain text. Zoom and Teams stay on the diagram as a second adapter.</p>
+      </div>
+      <div class="detail-block" data-detail="captions" hidden>
+        <div class="detail-head"><h2>Caption line</h2><button type="button" class="clear">Whole meeting</button></div>
+        <p>A script watches the captions region and commits a line when the text settles, the speaker changes, or a new row replaces it. Speaker aliases are applied, then the line is stored. The clock is time since the bot was admitted. Captions are strongest in English, and the page structure can change. If they never appear, typed “Hey BA” still works. No second speech-to-text service is added.</p>
+      </div>
+      <div class="detail-block" data-detail="chat" hidden>
+        <div class="detail-head"><h2>Chat message</h2><button type="button" class="clear">Whole meeting</button></div>
+        <p>Read from the same page. The bot’s own messages are ignored. A typed “Hey BA” is a trigger even when captions are empty, and it is how someone asks the bot to save or to leave.</p>
+      </div>
+      <div class="detail-block" data-detail="wake" hidden>
+        <div class="detail-head"><h2>Wake phrase</h2><button type="button" class="clear">Whole meeting</button></div>
+        <p>Accepts “hey ba”, “hey bea”, “hi ba”, “okay ba”, and “ok ba”. Rejects lookalikes such as “hey bob”, “bay area”, and “the BA team”. The question is the words after the phrase. If the phrase arrives alone, it waits a few seconds for the same speaker, then asks one short clarifying question. A follow-up to that question does not need a second “Hey BA”. Ordinary talk produces no trigger.</p>
+      </div>
+      <div class="detail-block" data-detail="agent" hidden>
+        <div class="detail-head"><h2>Agent loop</h2><button type="button" class="clear">Whole meeting</button></div>
+        <p>Runs only after a wake phrase. The prompt is the persona, a short digest of this meeting, and the question. For a car question it calls search_knowledge first, then search_cars if the local hit is weak or the fact is current or specific. It calls create_task only when it has a task, an owner, and a due date; otherwise it asks one question. It calls save_meeting when asked to save. The model does not post to Meet itself.</p>
+      </div>
+      <div class="detail-block" data-detail="knowledge" hidden>
+        <div class="detail-head"><h2>Knowledge base</h2><button type="button" class="clear">Whole meeting</button></div>
+        <p>Short Markdown files we write under data/knowledge/, such as hybrid, EV, and a few sourced examples. search_knowledge scores chunks by keyword overlap and returns the file and heading. There is no vector database and no hard-coded question-to-answer table. A strong local hit does not go on to web search.</p>
+      </div>
+      <div class="detail-block" data-detail="guard" hidden>
+        <div class="detail-head"><h2>Guardrails</h2><button type="button" class="clear">Whole meeting</button></div>
+        <p>A car fact in chat must cite a knowledge-base file or a URL, or the reply says it is not sure. An uncited number is regenerated once, then replaced with a not-sure line. search_cars is refused if the query contains a caption line, the participant list, or a Notion URL. Consent and task confirmations skip this check.</p>
+      </div>
+      <div class="detail-block" data-detail="post" hidden>
+        <div class="detail-head"><h2>Chat reply</h2><button type="button" class="clear">Whole meeting</button></div>
+        <p>One reply per trigger, after the guardrails pass. Meet chat does not render Markdown, so the answer is a few sentences or a small plain-text table. A save posts the Notion URL with reason MEETING_SAVED when people are still in the call.</p>
+      </div>
+      <div class="detail-block" data-detail="extract" hidden>
+        <div class="detail-head"><h2>Task extractor</h2><button type="button" class="clear">Whole meeting</button></div>
+        <p>Runs on recent caption lines and does not wait on a reply. The model returns JSON: task, owner, due date, and who said it. Web search is off. A question to the bot is not a task. An overheard task missing an owner or a due date is dropped, and the bot does not interrupt the meeting to ask. A complete task calls create_task directly.</p>
+      </div>
+      <div class="detail-block" data-detail="confirm" hidden>
+        <div class="detail-head"><h2>Confirmation</h2><button type="button" class="clear">Whole meeting</button></div>
+        <p>A new row is confirmed in chat, for example “Task added: Ali — cost sheet — Fri”. If that task and owner already exist, including from an earlier meeting, the chat says it is already tracked and nothing is written again. A failed write is also said in chat.</p>
+      </div>
+      <div class="detail-block" data-detail="memory" hidden>
+        <div class="detail-head"><h2>Meeting memory</h2><button type="button" class="clear">Whole meeting</button></div>
+        <p>Stores caption lines, tasks, and earlier replies so a restart can continue. digest() adds participants, open tasks, and the last few minutes to the next “Hey BA” prompt, and it is capped so a long meeting still fits. Older lines stay in SQLite and go into the summary at the end. This store is not an index of past meetings.</p>
+      </div>
+      <div class="detail-block" data-detail="save" hidden>
+        <div class="detail-head"><h2>save_meeting</h2><button type="button" class="clear">Whole meeting</button></div>
+        <p>Triggered by “Hey BA, save the meeting”, and by the adapter when the meeting ends or someone tells the bot it can go. The summary is a short paragraph from the model, with web search off, plus the task list. The transcript sits in a collapsed toggle. Running save twice updates the same page. The empty page is created at join so the consent message can include a real link.</p>
+      </div>
+      <div class="detail-block" data-detail="openai" hidden>
+        <div class="detail-head"><h2>OpenAI</h2><button type="button" class="clear">Whole meeting</button></div>
+        <p>The provided key. Default client is the OpenAI Responses API; Claude or Gemini can sit behind the same interface if the key is not OpenAI. Web search is enabled only inside search_cars. Task extraction and the meeting summary call the model with web search off. The model id is configuration, not hard-coded.</p>
+      </div>
+      <div class="detail-block" data-detail="web" hidden>
+        <div class="detail-head"><h2>Public web</h2><button type="button" class="clear">Whole meeting</button></div>
+        <p>OpenAI fetches public pages. The query is the car question, such as a current price or a named model. The transcript, the participant list, and Notion contents are not placed in that query. The chat reply shows the URL. If the notes and the search are both empty, the bot says it is not sure and does not invent a spec.</p>
+      </div>
+      <div class="detail-block" data-detail="notion" hidden>
+        <div class="detail-head"><h2>Notion</h2><button type="button" class="clear">Whole meeting</button></div>
+        <p>Two places: a summary page, and tasks with owner and due date. Property names come from notion_schema.yaml, so the attached database can be mapped without code changes. Dedup is normalised task text plus owner, including earlier meetings. Decisions, Requirements, and Risks are not separate databases in this build.</p>
+      </div>
+      <div class="detail-block" data-detail="zoom" hidden>
+        <div class="detail-head"><h2>Second platform</h2><button type="button" class="clear">Whole meeting</button></div>
+        <p>The same MeetingPlatform interface, with another adapter. Meet captions do not transfer, so that platform would need its own transcript source. This build joins Google Meet only.</p>
+      </div>
+      <div class="detail-block" data-detail="voice" hidden>
+        <div class="detail-head"><h2>Voice reply</h2><button type="button" class="clear">Whole meeting</button></div>
+        <p>The chat reply would stay. A short spoken version would use a text-to-speech API on the provided key, such as OpenAI speech. The mic would turn on only while the bot speaks. Today the mic stays off and every answer is typed.</p>
+      </div>
+      <div class="detail-block" data-detail="dbs" hidden>
+        <div class="detail-head"><h2>Decisions, Requirements, Risks</h2><button type="button" class="clear">Whole meeting</button></div>
+        <p>Three more databases linked to the meeting summary. In this build those topics are mentioned inside the summary when they came up. They are not their own rows.</p>
+      </div>
+      <div class="detail-block" data-detail="bom" hidden>
+        <div class="detail-head"><h2>BOM and compare</h2><button type="button" class="clear">Whole meeting</button></div>
+        <p>build_bom would return part, quantity, cost, and supplier. compare would return a short trade-off. Both would read the same knowledge base and would still not send the transcript out. Neither tool exists in this build.</p>
+      </div>
+      <div class="detail-block" data-detail="past" hidden>
+        <div class="detail-head"><h2>Past meetings</h2><button type="button" class="clear">Whole meeting</button></div>
+        <p>When someone asks about a previous meeting, read older summaries and open tasks from Notion. Today the memory used in a reply is this meeting only. Dedup against tasks already stored from earlier meetings still happens at write time.</p>
+      </div>
+      <div class="detail-block" data-detail="rule" hidden>
+        <div class="detail-head"><h2>Data-flow rule</h2><button type="button" class="clear">Whole meeting</button></div>
+        <p>The knowledge base is ours. The internet is used to fetch public car pages in. search_cars is rejected when the query contains a caption line, a participant list, or a Notion URL. The digest may still be sent to the LLM for a reply. It is not copied into the search query.</p>
+      </div>
+    </section>
+
+    <section style="margin-top: 28px">
+      <h2>Tools the running agent can call</h2>
+      <table>
+        <thead>
+          <tr><th>Tool</th><th>Who calls it</th><th>Where it goes</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>search_knowledge</code></td><td>Agent, on a car question</td><td>Local markdown files</td></tr>
+          <tr><td><code>search_cars</code></td><td>Agent, when the notes miss or the fact is current</td><td>OpenAI web search, car question only</td></tr>
+          <tr><td><code>create_task</code></td><td>Task extractor, or the agent when someone asks</td><td>Notion tasks (owner and due date)</td></tr>
+          <tr><td><code>save_meeting</code></td><td>Agent when asked, and the adapter when the meeting ends</td><td>Notion summary page</td></tr>
+          <tr><td><code>post_chat</code></td><td>Our code, after the output gate</td><td>Google Meet chat</td></tr>
+        </tbody>
+      </table>
+      <p class="source">Drawn and not callable: build_bom, compare, log_decision, add_requirement, and a spoken reply. Source: the 25 Oct brief and docs/tasks. The agent code is in src/ba_agent. This page matches that build. Extensions stay drawn and are not callable.</p>
+    </section>
+  </main>
+  <script>
+    var leads = {
+      system: "Two loops share one caption transcript. “Hey BA” is answered in chat. A complete overheard task is written to Notion without a wake phrase.",
+      reply: "“Hey BA” on a caption line or in chat starts one reply. Car facts come from the local notes first, then from web search if the notes miss. The draft is checked, then posted.",
+      task: "Ordinary speech is scanned in the background. A task with an owner and a due date is created in Notion and confirmed in chat. The bot does not ask the room to say “Hey BA”.",
+      save: "Save runs when someone asks, and again when the meeting ends. The summary is written with web search off. A second save updates the same Notion page.",
+      boundary: "The model may see this meeting. Web search may see only the car question. Notion stores the summary, the tasks, and the transcript."
+    };
+    var arrow = '<svg width="22" height="12" viewBox="0 0 22 12" aria-hidden="true"><path d="M1 6h17M14 2l5 4-5 4" fill="none" stroke="currentColor" stroke-width="1.25"></path></svg>';
+    var view = "system";
+    var selected = "";
+
+    document.querySelectorAll(".link").forEach(function (el) { el.innerHTML = arrow; });
+
+    function tags(node) {
+      return (node.dataset.hot || "").split(/\s+/).filter(Boolean);
+    }
+    function isDim(node) {
+      if (view === "system") return false;
+      if (node.classList.contains("ext")) return view === "boundary" ? node.dataset.id !== "rule" : true;
+      if (view === "boundary") return false;
+      return tags(node).indexOf(view) === -1;
+    }
+    function isHot(node) {
+      if (view === "boundary") return node.dataset.boundary === "true";
+      if (view === "system") return false;
+      return tags(node).indexOf(view) !== -1;
+    }
+    function paint() {
+      document.body.dataset.view = view;
+      document.getElementById("lead").textContent = leads[view];
+      document.querySelectorAll("[data-view-btn]").forEach(function (btn) {
+        btn.setAttribute("aria-pressed", btn.dataset.viewBtn === view ? "true" : "false");
+      });
+      document.querySelectorAll(".node").forEach(function (node) {
+        var on = node.dataset.id === selected;
+        node.classList.toggle("on", on);
+        node.classList.toggle("hot", isHot(node));
+        node.classList.toggle("dim", isDim(node) && !on);
+        node.setAttribute("aria-pressed", on ? "true" : "false");
+      });
+      document.querySelectorAll("[data-from]").forEach(function (el) {
+        var from = document.querySelector('.node[data-id="' + el.dataset.from + '"]');
+        var to = document.querySelector('.node[data-id="' + el.dataset.to + '"]');
+        var state = "rest";
+        if (view !== "system" && view !== "boundary") {
+          state = from && to && !isDim(from) && !isDim(to) ? "hot" : "quiet";
+        }
+        el.classList.toggle("hot", state === "hot");
+        el.classList.toggle("quiet", state === "quiet");
+      });
+      document.querySelectorAll(".detail-block").forEach(function (block) {
+        block.hidden = block.dataset.detail !== selected;
+      });
+    }
+    document.querySelectorAll("[data-view-btn]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        view = btn.dataset.viewBtn;
+        paint();
+      });
+    });
+    document.querySelectorAll(".node").forEach(function (node) {
+      node.addEventListener("click", function () {
+        selected = node.dataset.id;
+        paint();
+      });
+    });
+    document.querySelectorAll(".clear").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        selected = "";
+        paint();
+      });
+    });
+    paint();
+  </script>
+</body>
+</html>

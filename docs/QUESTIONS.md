@@ -1,6 +1,21 @@
 # Open questions for TechSol — BA Meeting Agent
 
-Source: [`TechSol AI Engineer Assignment — Build a BA Meeting Agent.pdf`](TechSol%20AI%20Engineer%20Assignment%20—%20Build%20a%20BA%20Meeting%20Agent.pdf) (Oct 13, 2026, @Raheel). Task plan: [`tasks/README.md`](tasks/README.md).
+**Revision 25 Oct 2026.** The source of truth is [`TechSol_AI_Engineer_Assignment_new.pdf`](TechSol_AI_Engineer_Assignment_new.pdf) (1-day task). The task plan is [`tasks/README.md`](tasks/README.md). Decisions already taken are in [`ANSWERS.md`](ANSWERS.md). The Q1–Q39 list below is the old question sheet. Where it conflicts with the revision, follow the revision.
+
+## Still open
+
+| # | Question | Working assumption | Affects |
+|---|---|---|---|
+| N1 | What are the property names on the Notion database you will attach? | Sandbox until it arrives: a summary page, and Tasks with Task (title), Owner (text), Due (date). Remap in `config/notion_schema.yaml` when the database is attached. | T11 |
+| N2 | Which model id does the OpenAI key allow, and does it include the Responses API `web_search` tool? | `llm.model` is config. Prefer a current model that supports `web_search` (the API guide points at `gpt-5.5` for new search integrations). | T06, T07 |
+| N3 | Is the live meeting in English, and will captions be left available for the bot to turn on for itself? | English. The bot clicks “Turn on captions” in its own window. The host does not start a separate transcription product. | T03 |
+| N4 | Cloud server: OS, how we log in, and whether Docker is already installed. | Ubuntu, SSH key, we may install Docker. No GPU required. | T15 |
+
+Closed by the new brief and by Adnan on 25 Oct 2026: Meet captions as the transcript (no extra STT API); OpenAI as the LLM, including web search for cars; TTS allowed but voice replies not built; Notion is a summary plus tasks; BOM, extra databases, a second platform, and cross-meeting memory are diagram-only.
+
+---
+
+Source of the Q1–Q39 list: [`TechSol AI Engineer Assignment — Build a BA Meeting Agent.pdf`](TechSol%20AI%20Engineer%20Assignment%20—%20Build%20a%20BA%20Meeting%20Agent.pdf) (Oct 13, 2026, @Raheel). Task plan: [`tasks/README.md`](tasks/README.md).
 
 These are the things the PDF does not say, or says in a way that can be read two ways. For every question there is a **working assumption**: what we build if we get no answer. Nothing is blocked while we wait, but a few answers change the design, so those are marked **Blocking** and should be asked first.
 
@@ -13,6 +28,8 @@ Priority meaning:
 ---
 
 ## Summary table
+
+The rows below are the 13 Oct question sheet. The revision at the top of this file wins when they disagree. Q18, Q21–Q22, and Q27–Q36 no longer describe the build.
 
 | # | Question (short) | Priority | Working assumption | Affects |
 |---|---|---|---|---|
@@ -33,7 +50,7 @@ Priority meaning:
 | Q15 | How big is a "small table", and what counts as a "line"? | Nice to know | Header + ≤ 8 rows, ≤ 5 columns; a line is ≤ 120 characters | T08, T12 |
 | Q16 | Should the bot leave the meeting on its own? | Nice to know | Leaves 2 min after everyone else; never earlier unless told | T02 |
 | Q17 | Language, timezone, date format, currency? | Important | English; timezone from config (default UTC); dates `24 Oct`; USD | T03, T09, T11 |
-| Q18 | Do Meet's built-in captions count as a "hosted transcription service"? | Important | Yes, so we don't use them; we run Whisper locally | T03 |
+| Q18 | Do Meet's built-in captions count as a "hosted transcription service"? | Closed | **Use them.** They are the transcript. No second STT API. See ANSWERS revision. | T03 |
 | Q19 | Is there required wording for the consent notice? | Nice to know | Our default text (see T02) | T02 |
 | Q20 | Can task owners be people who are not in the meeting? | Nice to know | Yes, the name is stored as given | T09, T11 |
 | Q21 | What are the property names and types of the 4 Notion databases? | Blocking | Unknown; schema mapping file + startup check; sandbox copy for development | T11 |
@@ -49,7 +66,7 @@ Priority meaning:
 | Q31 | Is derived maths (e.g. pack cost = kWh × $/kWh) acceptable when the formula is stated? | Important | Yes, formula shown in the reply | T08, T13 |
 | Q32 | VM details: OS, GPU model, driver, Docker, NVIDIA toolkit, disk, internet access? | Blocking | Ubuntu 22.04, NVIDIA driver present, we install Docker + toolkit, ≥ 100 GB disk, outbound internet | T15 |
 | Q33 | How do we access the VM, and is anyone else using the GPU? | Blocking | SSH with key; GPU is ours alone | T15 |
-| Q34 | Is Qwen2.5 7B (or 14B) via Ollama acceptable as the default LLM? | Nice to know | Yes, picked by our benchmark | T06 |
+| Q34 | Is Qwen2.5 7B (or 14B) via Ollama acceptable as the default LLM? | Superseded | OpenAI API, model id in config. See N2 | T06 |
 | Q35 | Should the bot stay running on the VM after submission so TechSol can test it alone? | Important | Yes; we leave it deployed with a how-to-join note | T15, T17 |
 | Q36 | Which "two diagrams" do you expect? | Important | System architecture + "Hey BA" sequence with latency budget | T17 |
 | Q37 | What format for the Notion export, and where should it go? | Nice to know | Markdown & CSV zip in `submission/notion-export/` | T17 |
@@ -222,13 +239,11 @@ Priority meaning:
 
 **If we don't hear back:** English; timezone set in config (we'll set Asia/Karachi if the staff are in Pakistan, otherwise UTC); dates shown as `24 Oct`; USD.
 
-### Q18 — Meet's built-in captions (Important)
+### Q18 — Meet's built-in captions (Closed)
 
-**Question:** Do Google Meet's own live captions count as a "hosted transcription service" (not allowed)? We assume yes and run our own speech-to-text (faster-whisper) on the VM.
+**Question:** Do Google Meet's own live captions count as a "hosted transcription service" (not allowed)?
 
-**Why it matters:** Using Meet captions would be simpler and more accurate, but they run on Google's servers. If they are allowed, we could use them as a backup source.
-
-**If we don't hear back:** We do not use them.
+**Answer (25 Oct 2026):** Use them. They are the only speech-to-text path. See T03.
 
 ### Q19 — Consent notice wording (Nice to know)
 
@@ -358,11 +373,11 @@ Priority meaning:
 
 **If we don't hear back:** SSH with a key; GPU is exclusively ours during the test.
 
-### Q34 — Default model (Nice to know)
+### Q34 — Default model (Superseded)
 
-**Question:** Is Qwen2.5 7B via Ollama acceptable as the default self-hosted LLM? If a 14B model fits in the GPU and is faster/more accurate for tool calling, may we use it as the default instead?
+**Question:** Is Qwen2.5 7B via Ollama acceptable as the default self-hosted LLM?
 
-**If we don't hear back:** We choose by our benchmark among Qwen2.5 7B, Llama 3.1 8B and Qwen2.5 14B, and document it. The LLM remains swappable by config.
+**Answer (25 Oct 2026):** The new brief provides an LLM API key. Default is OpenAI, model id in config, with the Responses API `web_search` tool for car lookups. See N2 and T06.
 
 ### Q35 — Keep it running after submission? (Important)
 

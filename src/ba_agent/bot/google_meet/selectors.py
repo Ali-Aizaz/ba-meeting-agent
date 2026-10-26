@@ -1,0 +1,17 @@
+"""Meet selectors. Prefer accessible names. Each one has a fallback in the adapter."""
+
+CAPTION_REGION = '[role="region"][aria-label*="aption" i], [data-ba-captions]'
+TURN_ON_CAPTIONS = "Turn on captions"
+TURN_OFF_CAPTIONS = "Turn off captions"
+CHAT_BOX = "Send a message to everyone"
+CHAT_BUTTON = "Chat with everyone"
+LEAVE_CALL = "Leave call"
+JOIN_BUTTONS = ("Join now", "Ask to join")
+MIC_ON_ACTION = "Turn off microphone"
+CAM_ON_ACTION = "Turn off camera"
+MIC_OFF_STATE = "Turn on microphone"
+CAM_OFF_STATE = "Turn on camera"
+NAME_LABEL = "Your name"
+PARTICIPANT = "[data-participant-id]"
+PARTICIPANT_SELF = "[data-participant-id][data-self='true']"
+ENDED = "[data-ba-ended='true']"

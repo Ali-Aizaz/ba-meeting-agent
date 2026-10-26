@@ -1,0 +1,19 @@
+services:
+  ba:
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    restart: unless-stopped
+    ipc: host
+    shm_size: "2gb"
+    environment:
+      MEET_URL: ${MEET_URL:-}
+      BA_BROWSER__PROFILE_DIR: /app/data/browser-profile
+    volumes:
+      - browser-profile:/app/data/browser-profile
+      - ./data/state:/app/data/state
+    command: ["join", "${MEET_URL:-}"]
+
+volumes:
+  browser-profile:

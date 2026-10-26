@@ -1,0 +1,48 @@
+meeting:
+  platform: google_meet
+  join_mode: signed_in
+  bot_name: TechSol BA
+  consent_message: "Hi, I'm TechSol BA, an AI assistant. I'm using this meeting's captions to keep notes (who said what, when) and to record tasks in Notion. Say \"Hey BA …\" to ask me something. Tell the host if you do not consent."
+  timezone: UTC
+  lobby_timeout_s: 300
+  alone_timeout_s: 60
+captions:
+  stable_ms: 800
+  language: en
+speakers:
+  aliases_file: config/people.yaml
+trigger:
+  phrases:
+    - hey ba
+  fuzzy_threshold: 85
+  followup_window_s: 20
+  pause_wait_s: 5
+  dedup_window_s: 3
+llm:
+  provider: openai
+  model: gpt-5.5
+  timeout_s: 25
+  summary_timeout_s: 20
+  base_url: https://api.openai.com/v1
+knowledge:
+  dir: data/knowledge
+  min_score: 0.5
+tasks:
+  auto_create: true
+notion:
+  enabled: true
+  schema_file: config/notion_schema.yaml
+  version: "2022-06-28"
+  databases:
+    summary: ""
+    tasks: ""
+storage:
+  sqlite_path: data/state/meeting.db
+server:
+  status_host: 127.0.0.1
+  status_port: 8765
+browser:
+  headless: false
+  profile_dir: data/state/browser-profile
+  rejoin_limit: 3
+  no_sandbox: true

@@ -1,0 +1,20 @@
+# Map our fields to the Notion database that is attached.
+# Swap this file when the real database arrives. Empty ids mean "not attached yet".
+version: "2022-06-28"
+status_default: Not started
+databases:
+  summary: ""
+  tasks: ""
+summary:
+  title: {name: Title, type: title}
+  date: {name: Date, type: date}
+  summary: {name: Summary, type: rich_text}
+  transcript: {name: Transcript, type: rich_text}
+tasks:
+  task: {name: Task, type: title}
+  owner: {name: Owner, type: rich_text}
+  due: {name: Due, type: date}
+  status: {name: Status, type: status}
+  said_by: {name: Said by, type: rich_text}
+  time: {name: Time, type: rich_text}
+  meeting: {name: Meeting, type: url}

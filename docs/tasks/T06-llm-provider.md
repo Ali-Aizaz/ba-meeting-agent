@@ -1,116 +1,97 @@
-# T06 — Self-hosted LLM provider, swappable by config
+# T06 — OpenAI client, swappable by config
 
-**Priority:** Must · **Milestone:** M1 Foundations · **Depends on:** T01 · **Estimate:** 1.5 days
+**Priority:** Must · **Depends on:** T01 · **Estimate:** part of the one-day build
 
 ## Why
 
-- "Deploy" row: **LLM swappable by config, self-hosted by default** (C1).
-- "Reasoning (LLM)" part: plans the answer, **decides which tool to call**, writes the reply. The model must support tool/function calling.
-- No public chatbots on meeting data (C3): the default setup must never send meeting content to a hosted service.
-- Suggested stack: **Qwen2.5 7B / Llama 3.1 8B via Ollama** on the provided 24 GB GPU VM.
-- One GPU is shared by STT, embeddings and the LLM. Answers to "Hey BA" must not queue behind background work, or we miss the 10 s target (C8).
+- The new brief gives an LLM API key (OpenAI, Claude, or Gemini).
+- Adnan asked to use the OpenAI API, including web search, to find cars.
+- Car answers and the meeting summary both go through this client.
 
 ## What
 
 **In scope**
-- Ollama service (GPU) in Docker Compose with the default model pulled and kept warm.
-- `LLMClient` abstraction over the **OpenAI-compatible Chat Completions API**. That API works with Ollama, vLLM, llama.cpp server and hosted providers, so switching is a config change.
-- Tool calling and JSON/structured output helpers.
-- Priority lanes: `interactive` (trigger answers) and `background` (classifier, summaries).
-- Remote-endpoint guard (`llm.allow_remote`).
-- Model selection benchmark (accuracy vs latency).
+- `LLMClient` on the OpenAI Responses API.
+- Tool `web_search` for car lookups (called from T07 as `search_cars`).
+- Function tools the agent runs locally (`search_knowledge`, `create_task`, `save_meeting`). `post_chat` is called by our code after the reply is ready, so the model does not post to Meet itself.
+- Config swap of model and, if needed, provider.
+- A startup check that the key is present.
 
 **Out of scope**
-- Prompts (T09, T12), embeddings (T07).
+- Ollama, vLLM, GPU memory budgets, and a ban on remote APIs.
+- Prompts (T12) and the knowledge files (T07).
 
 ## Details
 
-### Serving
-- `ollama` container with the NVIDIA GPU reserved (T15). Persist models in a volume.
-- An `ollama-init` one-shot service runs `ollama pull qwen2.5:7b-instruct` (and the alternative model) on first start.
-- **Context length:** Ollama picks a default context length from available VRAM (per its docs: 4k below 24 GiB, 32k for 24–48 GiB). A "24 GB" card can land on either side of that line, and anything longer than the context is silently truncated. **Set it explicitly** to 16k (enough for persona + tools + meeting digest + retrieved chunks, and smaller than 32k so the KV cache leaves room for Whisper). Use the `OLLAMA_CONTEXT_LENGTH=16384` server env var, or a derived model (`Modelfile` with `PARAMETER num_ctx 16384`). The OpenAI-compatible endpoint can't set the context size per request. Check the value with `ollama ps` (`CONTEXT` column).
-- **Keep warm:** `OLLAMA_KEEP_ALIVE=-1` (never unload) plus a warm-up request at agent start, so the first "Hey BA" doesn't pay model-load time.
-- `OLLAMA_NUM_PARALLEL=2` so one interactive request can run alongside one background request.
+### Default
 
-### Client
+| Setting | Value |
+|---|---|
+| `llm.provider` | `openai` |
+| `llm.base_url` | `https://api.openai.com/v1` |
+| `llm.model` | Set from the key. Prefer a current model that supports Responses `web_search`. The API guide’s recommended new-search path is `gpt-5.5`. Override with `BA_LLM__MODEL`. |
+| `llm.api_key` | `BA_LLM__API_KEY` (or `OPENAI_API_KEY`). Never logged. |
+
+Claude or Gemini is a second implementation of the same client interface, selected with `llm.provider`. Do not build it unless the provided key is not OpenAI. The interface stays small so the swap is real:
+
 ```python
 class LLMClient:
-    async def chat(self, messages, tools=None, response_format=None,
-                   lane: Literal["interactive", "background"] = "background",
-                   max_tokens=None, timeout_s=None) -> LLMResponse
+    async def respond(self, input, tools=None, *, enable_web_search: bool = False,
+                      timeout_s: float | None = None) -> LLMResponse
 ```
-- Implemented with the `openai` Python SDK (`base_url=llm.base_url`, `api_key=llm.api_key`). Ollama exposes this API at `/v1`.
-- Returns text, parsed `tool_calls` (name + JSON args), token usage and latency.
-- Validates tool-call arguments against the tool's pydantic schema. On invalid JSON or a schema error it makes one repair attempt (send the error back to the model) before failing.
-- Structured output (classifier, guardrail checks): request JSON with a schema. Ollama supports JSON-schema `format` on its native API, and `response_format` on the OpenAI-compatible endpoint. Always validate with pydantic regardless.
-- Timeouts: `llm.timeout_s` for interactive calls. Exceeding it triggers T14's fallback path.
 
-### Swapping models / providers (config only)
-| Target | Config |
-|---|---|
-| Default (self-hosted) | `llm.base_url=http://ollama:11434/v1`, `llm.model=qwen2.5:7b-instruct` |
-| Llama 3.1 8B | `llm.model=llama3.1:8b` |
-| vLLM on the same VM | `llm.base_url=http://vllm:8000/v1`, `llm.model=Qwen/Qwen2.5-7B-Instruct` |
-| Hosted API (allowed only for non-meeting testing) | `llm.base_url=https://…`, `llm.allow_remote=true` |
+`LLMResponse` carries text, local function calls (name + JSON args), web citations (`url`, `title`), and the web search queries the API reports.
 
-### Remote guard (protects C3)
-At startup, resolve the `llm.base_url` host. If it isn't a container name, localhost or a private IP, and `llm.allow_remote` is `false`, **refuse to start** with an explicit error. The README explains that enabling remote providers on real meeting data breaks the assignment rules.
+### Web search
 
-### Priority lanes
-- An asyncio scheduler in front of the client: `interactive` requests start immediately. `background` requests wait while any interactive request is in flight, and at most 1 background request runs at a time.
-- The classifier tolerates delay (T09 batches). Answers do not.
+Enable with `tools: [{ "type": "web_search" }]` on `POST /v1/responses`. Use `web_search`, not the older `web_search_preview`.
 
-### GPU memory budget (24 GB, approximate; verify with `nvidia-smi` on the VM)
-| Component | Approx. VRAM |
-|---|---|
-| Qwen2.5-7B-Instruct, Ollama default 4-bit quant (~4.7 GB weights) + KV cache at 16k ctx × 2 parallel | ~7–9 GB |
-| faster-whisper `large-v3-turbo` fp16 | ~2–3 GB |
-| Embedding model (bge-small) | < 1 GB |
-| Headroom | > 10 GB |
+`search_cars(query)` is a thin wrapper:
 
-The headroom means a **14B model (e.g. `qwen2.5:14b`, 4-bit)** is an option if 7B tool calling turns out unreliable. Benchmark it for latency before switching.
+- `query` is one car question, written by the agent from what was asked (“2024 Toyota RAV4 hybrid battery warranty”, “difference between mild hybrid and full hybrid”).
+- The request input is that question plus a one-line instruction to answer with public facts and cite URLs.
+- Do not attach the transcript, the participant list, Notion pages, or earlier chat. This is the “internet only to fetch data in” rule (C4).
+- Return the answer text and `url_citation` annotations. The chat reply must show at least one URL when the fact came from search.
 
-### Model selection benchmark
-Run the T16 evaluation set (tool choice accuracy, argument accuracy, guardrail behaviour, latency) on `qwen2.5:7b-instruct`, `llama3.1:8b` and `qwen2.5:14b`. Choose the most accurate model whose p95 interactive latency fits T14's budget. Record the results for the README "tech choices" section.
+Web search is for car facts. Meeting notes and task extraction use a normal response with no web search.
+
+### Local tools
+
+Pass function tools as Responses function tools. Validate arguments with pydantic. One repair round if the JSON does not match the schema, then fail that tool and tell the chat we could not complete it.
+
+### Timeouts
+
+`llm.timeout_s` default 25 for a reply that may search, 20 for a summary. There is no 10-second gate. Log duration so a slow search is visible in rehearsal.
+
+### What we send to OpenAI
+
+Sending the “Hey BA” question, a short digest of this meeting (T10), and tool results to the provided LLM is required. That is the key they give us.
+
+Sending the meeting out anywhere else is not. Web search queries stay car questions. No Deepgram, no hosted meeting bot, no paste of the transcript into a separate chatbot.
 
 ## Acceptance criteria
 
-- [ ] `docker compose up` starts Ollama with the default model available, without manual steps.
-- [ ] Changing only `BA_LLM__MODEL` / `BA_LLM__BASE_URL` switches models or providers, with no code change.
-- [ ] Tool calls are parsed and validated. Invalid arguments get one repair attempt.
-- [ ] The context window is confirmed ≥ 16k: a 12k-token prompt is not truncated (test below).
-- [ ] The remote guard blocks a public endpoint unless `allow_remote=true`.
-- [ ] An interactive request is never delayed by more than one in-flight background request (measured).
-- [ ] The benchmark table is produced and the default model chosen.
+- [ ] A missing API key stops startup with a clear error.
+- [ ] `search_cars("What is a hybrid car?")` returns text and at least one URL.
+- [ ] A unit test asserts the search request body contains the car question and does not contain a sample transcript fixture.
+- [ ] Changing `BA_LLM__MODEL` changes the model with no code edit.
+- [ ] Invalid tool arguments get one repair attempt.
 
 ## Tests
 
 | ID | Type | Test | Pass |
 |---|---|---|---|
-| T06-U1 | unit | Mock OpenAI-compatible server (`respx`): tool call response parsed into name + args | Correct |
-| T06-U2 | unit | Invalid tool args → repair round → valid | One retry, then success; second failure raises |
-| T06-U3 | unit | Timeout handling | Raises `LLMTimeout` within `timeout_s` + 100 ms |
-| T06-U4 | unit | Remote guard: `http://ollama:11434`, `http://10.0.0.5`, `https://api.example.com` | allow, allow, block |
-| T06-U5 | unit | Priority scheduler with fake slow calls | Interactive starts ≤ 10 ms after submit when only background is running |
-| T06-I1 | integration (Ollama) | For each tool schema (T12), 10 natural-language prompts | ≥ 90% correct tool + valid args on the default model |
-| T06-I2 | integration (Ollama) | "Needle" test: fact placed at the start of a ~12k-token prompt, asked about at the end | Answered correctly (proves no truncation) |
-| T06-I3 | integration | Swap to `llama3.1:8b` via env only; rerun T06-I1 | Runs without code change |
-| T06-P1 | performance (VM) | Typical interactive prompts (~5k and ~9k tokens in with a cached ~2.5k prefix, ~150 out) | Record p50/p95; feeds T14 stage 7 |
+| T06-U1 | unit | Mock Responses payload with a function call | Name and args parsed |
+| T06-U2 | unit | Mock `web_search_call` + `url_citation` | Query and URL captured |
+| T06-U3 | unit | Search body vs a transcript fixture | Transcript string absent |
+| T06-I1 | live key | `search_cars` for a well-known car fact | Non-empty answer, at least one http URL |
 
 ## Dependencies
 
-- T01. Used by T07 (optional query rewriting), T09, T10, T12, T13.
+- T01. Used by T07, T09, T12.
 
 ## Related resources
 
-- Ollama: https://github.com/ollama/ollama
-- Ollama OpenAI compatibility (supported fields; setting context size via Modelfile): https://docs.ollama.com/api/openai-compatibility
-- Ollama context length (VRAM-based defaults, `OLLAMA_CONTEXT_LENGTH`): https://docs.ollama.com/context-length
-- Ollama tool calling: https://docs.ollama.com/capabilities/tool-calling · announcement: https://ollama.com/blog/tool-support
-- Ollama structured outputs: https://docs.ollama.com/capabilities/structured-outputs
-- Ollama FAQ (keep-alive, parallel requests): https://docs.ollama.com/faq
-- Ollama Docker image: https://hub.docker.com/r/ollama/ollama
-- Qwen2.5 on Ollama: https://ollama.com/library/qwen2.5 · Llama 3.1 on Ollama: https://ollama.com/library/llama3.1
-- vLLM OpenAI-compatible server: https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html
+- Web search guide: https://developers.openai.com/api/docs/guides/tools-web-search
+- Responses API: https://developers.openai.com/api/docs/api-reference/responses
 - OpenAI Python SDK: https://github.com/openai/openai-python
-- respx (HTTP mocking for tests): https://lundberg.github.io/respx/
