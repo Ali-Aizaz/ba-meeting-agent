@@ -38,7 +38,7 @@ def parse_task_command(question: str, *, said_by: str, time: str, today: date) -
     owner = (match.group("owner") or "").strip(" .")
     body = match.group("body").strip().rstrip(".")
     due_text = ""
-    due_match = re.search(r"\s+by\s+(.+)$", body, re.I)
+    due_match = re.search(r"\s+(?:by|on|before|due)\s+(.+)$", body, re.I)
     if due_match:
         due_text = due_match.group(1).strip()
         body = body[: due_match.start()].strip()
@@ -58,9 +58,18 @@ def apply_followup(record: TaskRecord, text: str, *, today: date) -> TaskRecord:
     due = parse_due(text, today=today)
     owner = record.owner
     if not owner:
-        owner_match = re.match(r"([A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+)?)", text.strip())
-        if owner_match and not parse_due(owner_match.group(1), today=today):
-            owner = owner_match.group(1)
+        candidate = re.sub(r"^(?:for|owner(?:\s+is)?)\s+", "", text.strip(), flags=re.I)
+        candidate = re.split(r"\s+(?:by|on|before|due)\s+|[,;]", candidate, maxsplit=1)[0].strip()
+        tokens = [
+            tok
+            for tok in candidate.split()
+            if parse_due(tok, today=today) is None
+            and tok.lower() not in {"next", "by", "on", "for", "and", "the"}
+        ]
+        if tokens:
+            owner_str = " ".join(tokens[:2]).strip(" .")
+            if owner_str and not parse_due(owner_str, today=today):
+                owner = owner_str
     due_text = record.due_text
     if due is not None:
         due_text = text.strip()

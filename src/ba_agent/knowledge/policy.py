@@ -63,7 +63,29 @@ _CAR_WORDS = _BRANDS + (
 )
 
 
+_MEETING_PATTERNS = (
+    re.compile(r"\bwhat\s+did\s+we\b", re.I),
+    re.compile(r"\bdid\s+we\s+(?:decide|agree|say|discuss|pick|choose)\b", re.I),
+    re.compile(
+        r"\b(?:our|the)\s+(?:decision|decisions|tasks|action items|meeting|summary|notes)\b",
+        re.I,
+    ),
+    re.compile(r"\bwho\s+(?:said|owns|is\s+in\s+the\s+meeting)\b", re.I),
+    re.compile(r"\bwhat\s+did\s+[a-z]+\s+say\b", re.I),
+    re.compile(r"\bin\s+this\s+meeting\b", re.I),
+    re.compile(r"\b(?:summarize|summarise|recap)\b", re.I),
+    re.compile(r"\b(?:add|create|assign|log|track)\b.*\btask\b", re.I),
+    re.compile(r"\bassign\s+[a-z]+\s+to\b", re.I),
+)
+
+
+def is_meeting_question(query: str) -> bool:
+    return any(pattern.search(query) is not None for pattern in _MEETING_PATTERNS)
+
+
 def needs_current_fact(query: str) -> bool:
+    if is_meeting_question(query):
+        return False
     text = query.lower()
     if any(marker in text for marker in _CURRENT):
         return True
@@ -73,7 +95,9 @@ def needs_current_fact(query: str) -> bool:
 
 
 def is_car_question(query: str, hits: list[Chunk]) -> bool:
-    if hits or needs_current_fact(query):
+    if is_meeting_question(query):
+        return False
+    if hits:
         return True
     text = query.lower()
     return any(re.search(rf"\b{re.escape(word)}\b", text) for word in _CAR_WORDS)

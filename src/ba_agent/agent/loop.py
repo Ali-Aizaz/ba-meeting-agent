@@ -14,9 +14,15 @@ from ba_agent.guardrails.citations import NOT_SURE, finalize_reply, reply_status
 from ba_agent.knowledge.policy import is_car_question, should_search_web
 from ba_agent.knowledge.search import Chunk, KnowledgeIndex
 from ba_agent.llm.tools import local_tools
-from ba_agent.models import CaptionLine, PostReason, TriggerEvent, WebResult
+from ba_agent.models import CaptionLine, PostReason, TaskRecord, TriggerEvent, WebResult
 from ba_agent.notion.messages import notes_saved
-from ba_agent.tasks_extract.extractor import apply_followup, is_task_request, parse_task_command
+from ba_agent.tasks_extract.dates import parse_due
+from ba_agent.tasks_extract.extractor import (
+    apply_followup,
+    dedup_key,
+    is_task_request,
+    parse_task_command,
+)
 from ba_agent.trigger.detector import TriggerDetector
 
 logger = logging.getLogger("ba_agent.agent")
@@ -99,7 +105,7 @@ class AgentLoop:
             return _saved(url), PostReason.MEETING_SAVED, started, started
         if is_task_request(question):
             return await self._requested_task(question, event, started)
-        return await self._answer(question, started)
+        return await self._answer(question, event, started)
 
     async def _complete_pending(self, event: TriggerEvent, started: float):
         record = apply_followup(self.pending_task, event.question, today=self.today())
@@ -123,7 +129,7 @@ class AgentLoop:
         result = await self.create_task(record)
         return result.message, PostReason.CONFIRMATION, started, time.perf_counter()
 
-    async def _answer(self, question: str, started: float):
+    async def _answer(self, question: str, event: TriggerEvent, started: float):
         hits = self.knowledge.search(question)
         web: WebResult | None = None
         car = is_car_question(question, hits)
@@ -141,6 +147,20 @@ class AgentLoop:
             enable_web_search=False,
             timeout_s=self.timeout_s,
         )
+        if first.function_calls:
+            tool_outcome = await self._handle_tool_calls(
+                first.function_calls, event, hits, model_at
+            )
+            if tool_outcome is not None:
+                return tool_outcome
+            prompt = _prompt(self.persona, self.digest(), question, hits, web, car)
+            if not first.text:
+                first = await self.llm.respond(
+                    prompt,
+                    tools=None,
+                    enable_web_search=False,
+                    timeout_s=self.timeout_s,
+                )
         if not car:
             text = first.text or "I don't have that in this meeting."
             return text, PostReason.REPLY, model_at, tool_at
@@ -149,11 +169,49 @@ class AgentLoop:
         second = await self.llm.respond(
             prompt + "\n\nCite a source you were given, or say you are not sure. "
             "Do not invent a number.",
-            tools=local_tools(),
+            tools=None,
             enable_web_search=False,
             timeout_s=self.timeout_s,
         )
         return finalize_reply(first.text, second.text), PostReason.REPLY, model_at, tool_at
+
+    async def _handle_tool_calls(
+        self, calls, event: TriggerEvent, hits: list[Chunk], model_at: float
+    ):
+        seen_sources = {hit.source for hit in hits}
+        for call in calls:
+            if call.name == "save_meeting":
+                url = await self._save()
+                return _saved(url), PostReason.MEETING_SAVED, model_at, time.perf_counter()
+            if call.name == "create_task":
+                args = call.arguments or {}
+                task_text = str(args.get("task") or "").strip()
+                owner = str(args.get("owner") or "").strip()
+                due_text = str(args.get("due") or "").strip()
+                due = parse_due(due_text, today=self.today()) if due_text else None
+                record = TaskRecord(
+                    task=task_text,
+                    owner=owner,
+                    due=due,
+                    due_text=due_text,
+                    said_by=event.speaker,
+                    time=format_meeting_time(event.t_detected),
+                    key=dedup_key(task_text, owner) if task_text and owner else "",
+                )
+                if not task_text or not owner or due is None:
+                    self.pending_task = record if task_text else None
+                    self.trigger.arm_followup(event.speaker, event.t_detected)
+                    return _ask(self.pending_task), PostReason.REPLY, model_at, time.perf_counter()
+                result = await self.create_task(record)
+                return result.message, PostReason.CONFIRMATION, model_at, time.perf_counter()
+            if call.name == "search_knowledge":
+                query = str((call.arguments or {}).get("query") or "").strip()
+                if query:
+                    for extra in self.knowledge.search(query):
+                        if extra.source not in seen_sources:
+                            seen_sources.add(extra.source)
+                            hits.append(extra)
+        return None
 
     async def _save(self) -> str:
         try:

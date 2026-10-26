@@ -11,7 +11,15 @@ import pytest
 from ba_agent.agent.loop import AgentLoop, deliver_caption
 from ba_agent.knowledge.search import KnowledgeIndex
 from ba_agent.llm.tools import local_tools
-from ba_agent.models import CaptionLine, LLMResponse, PostReason, TriggerEvent, WebResult
+from ba_agent.models import (
+    CaptionLine,
+    FunctionCall,
+    LLMResponse,
+    PostReason,
+    TriggerEvent,
+    WebResult,
+)
+from ba_agent.notion.client import TaskWrite
 from ba_agent.trigger.detector import TriggerDetector
 
 TRANSCRIPT = "UNIQUE_TRANSCRIPT_FIXTURE Sara said the budget is locked"
@@ -176,3 +184,67 @@ async def test_t14_u1_timing_log(caplog) -> None:
     assert "model_start_ms=" in text
     assert "tool_ms=" in text
     assert "chat_posted_ms=" in text
+
+
+@pytest.mark.asyncio
+async def test_t12_meeting_question_with_car_word_does_not_search_web() -> None:
+    async def search_cars(query: str) -> WebResult:
+        raise AssertionError(f"search_cars should not run for meeting question: {query}")
+
+    agent, poster, _created = _agent(
+        "You decided to use the 60 kWh hybrid setup for city driving.",
+        search_cars,
+    )
+    await agent.handle(_event("what did we decide about the 2026 Ford hybrid?"))
+    assert len(poster.posts) == 1
+    assert "decided" in poster.posts[0][0]
+
+
+@pytest.mark.asyncio
+async def test_t12_function_call_create_task_and_search_knowledge() -> None:
+    created = []
+
+    async def create_task(record):
+        created.append(record)
+        return TaskWrite(True, "✓ Task added: Ali — cost sheet — Fri", page_id="p1", key=record.key)
+
+    class ToolLLM:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def respond(self, input, tools=None, *, enable_web_search=False, timeout_s=None):
+            self.calls += 1
+            if "assign Ali" in input and tools:
+                return LLMResponse(
+                    function_calls=[
+                        FunctionCall(
+                            name="create_task",
+                            arguments={"task": "cost sheet", "owner": "Ali", "due": "Friday"},
+                        )
+                    ]
+                )
+            if self.calls == 1 and tools:
+                return LLMResponse(
+                    function_calls=[
+                        FunctionCall(name="search_knowledge", arguments={"query": "hybrid"})
+                    ]
+                )
+            return LLMResponse(text="A hybrid uses an engine and motor (src: hybrid.md).")
+
+    async def search_cars(query: str) -> WebResult:
+        raise AssertionError(query)
+
+    agent, poster, _ = _agent("unused", search_cars)
+    agent.llm = ToolLLM()
+    agent.create_task = create_task
+
+    await agent.handle(_event("what is a hybrid?", trigger_id="t_kb"))
+    assert len(poster.posts) == 1
+    assert "(src: hybrid.md)" in poster.posts[0][0]
+
+    agent.llm = ToolLLM()
+    await agent.handle(_event("could you assign Ali to finish the cost sheet by Friday?", "t_task"))
+    assert len(created) == 1
+    assert created[0].owner == "Ali"
+    assert poster.posts[-1][0] == "✓ Task added: Ali — cost sheet — Fri"
+    assert poster.posts[-1][1] is PostReason.CONFIRMATION

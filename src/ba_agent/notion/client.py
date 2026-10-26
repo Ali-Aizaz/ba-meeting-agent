@@ -69,6 +69,7 @@ class NotionService:
         self.timezone_name = timezone_name
         self.summary_page_id = summary_page_id
         self.summary_url = summary_url
+        self._toggle_written = False
         self.task_parent: dict = {"database_id": schema.tasks_db} if schema.tasks_db else {}
         self.summary_parent: dict = {"database_id": schema.summary_db} if schema.summary_db else {}
         self._limiter = _Limiter(min_interval)
@@ -229,12 +230,23 @@ class NotionService:
             )
             self.summary_page_id = created.get("id", "")
             self.summary_url = created.get("url", "")
+            self._toggle_written = True
             return self.summary_url
         await self._request(
             "PATCH",
             f"/pages/{self.summary_page_id}",
             {"properties": properties},
         )
+        if not self._toggle_written:
+            try:
+                await self._request(
+                    "PATCH",
+                    f"/blocks/{self.summary_page_id}/children",
+                    {"children": children},
+                )
+                self._toggle_written = True
+            except Exception:
+                logger.info("transcript toggle append skipped")
         return self.summary_url
 
     def saved_message(self) -> str:

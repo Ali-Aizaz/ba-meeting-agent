@@ -32,7 +32,7 @@ from ba_agent.bot.google_meet.selectors import (
     VIDEO_TAB,
 )
 from ba_agent.captions.stabilize import CaptionRow
-from ba_agent.config import Settings, resolve_path
+from ba_agent.config import Settings, resolve_path, validate_meet_url
 from ba_agent.models import ChatMessage, PostReason
 
 logger = logging.getLogger("ba_agent.meet")
@@ -74,10 +74,12 @@ class GoogleMeetAdapter:
     async def join(self, url: str) -> None:
         from playwright.async_api import async_playwright
 
+        url = validate_meet_url(url)
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         self._playwright = await async_playwright().start()
         args = [
             "--use-fake-ui-for-media-stream",
+            "--use-fake-device-for-media-stream",
             "--autoplay-policy=no-user-gesture-required",
             "--disable-dev-shm-usage",
         ]
@@ -97,6 +99,7 @@ class GoogleMeetAdapter:
         else:
             self.page = await self._context.new_page()
         await self.page.goto(url, wait_until="domcontentloaded")
+        await self._wait_for_prejoin()
         await self._mute()
         await self._fill_name()
         await self._click_join()
@@ -216,13 +219,19 @@ class GoogleMeetAdapter:
         if count == 0:
             return None
         self_count = await self.page.locator(PARTICIPANT_SELF).count()
-        return max(0, count - self_count)
+        if self_count > 0:
+            return max(0, count - self_count)
+        return max(0, count - 1)
 
     async def meeting_closed(self) -> bool:
         if self.page is None:
             return True
         try:
-            return await self.page.locator(ENDED).count() > 0
+            if await self.page.locator(ENDED).count() > 0:
+                return True
+            if self._admitted_at is not None:
+                return await self.page.get_by_role("button", name=LEAVE_CALL).count() == 0
+            return False
         except Exception:
             return True
 
@@ -282,6 +291,23 @@ class GoogleMeetAdapter:
             except Exception:
                 return
 
+    async def _wait_for_prejoin(self) -> None:
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            for label in JOIN_BUTTONS:
+                if await self.page.get_by_role("button", name=label).count():
+                    return
+            if await self.page.get_by_label(NAME_LABEL).count():
+                return
+            for dismiss in ("Continue without microphone and camera", "Dismiss", "Got it"):
+                btn = self.page.get_by_role("button", name=dismiss)
+                if await btn.count():
+                    try:
+                        await btn.first.click(timeout=500)
+                    except Exception:
+                        pass
+            await asyncio.sleep(0.25)
+
     async def _mute(self) -> None:
         for label in (MIC_ON_ACTION, CAM_ON_ACTION):
             button = self.page.get_by_role("button", name=label)
@@ -289,8 +315,6 @@ class GoogleMeetAdapter:
                 await button.first.click()
 
     async def _fill_name(self) -> None:
-        if self.settings.meeting.join_mode != "guest":
-            return
         field = self.page.get_by_label(NAME_LABEL)
         if await field.count():
             await field.first.fill(self.settings.meeting.bot_name)

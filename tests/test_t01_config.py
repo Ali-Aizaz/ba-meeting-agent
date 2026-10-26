@@ -6,7 +6,13 @@ import pytest
 from pydantic import SecretStr
 from tests.conftest import clear_secrets
 
-from ba_agent.config import CONSENT_MESSAGE, StartupError, ensure_ready, load_settings
+from ba_agent.config import (
+    CONSENT_MESSAGE,
+    StartupError,
+    ensure_ready,
+    load_settings,
+    validate_meet_url,
+)
 
 
 def test_t01_u1_yaml_defaults(monkeypatch) -> None:
@@ -71,3 +77,19 @@ def test_t01_u4_repr_hides_secrets(monkeypatch) -> None:
     text = repr(settings)
     assert "super-secret-token-xyz" not in text
     assert "notion-secret-abc" not in text
+    assert "super-secret-token-xyz" not in str(settings)
+    assert "notion-secret-abc" not in str(settings)
+
+
+def test_t01_validate_meet_url_blocks_ssrf() -> None:
+    assert validate_meet_url("https://meet.google.com/abc-defg-hij") == (
+        "https://meet.google.com/abc-defg-hij"
+    )
+    for bad in (
+        "",
+        "file:///etc/passwd",
+        "http://169.254.169.254/latest/meta-data/",
+        "https://evil.example.com/meet",
+    ):
+        with pytest.raises(StartupError):
+            validate_meet_url(bad)

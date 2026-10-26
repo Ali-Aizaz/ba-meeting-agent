@@ -37,6 +37,42 @@ _STOP = {
     "please",
     "can",
     "could",
+    "tell",
+    "explain",
+    "describe",
+    "define",
+    "difference",
+    "between",
+    "vs",
+    "versus",
+    "work",
+    "works",
+    "working",
+    "mean",
+    "means",
+    "with",
+    "from",
+    "by",
+    "at",
+    "this",
+    "that",
+    "these",
+    "those",
+    "why",
+    "when",
+    "where",
+    "which",
+    "who",
+}
+
+_STEM_MAP = {
+    "hybrids": "hybrid",
+    "evs": "ev",
+    "batteries": "battery",
+    "tyres": "tire",
+    "tires": "tire",
+    "tyre": "tire",
+    "bodies": "body",
 }
 
 
@@ -110,9 +146,17 @@ def _split(text: str) -> list[tuple[str, str]]:
     return chunks
 
 
+def _stem(word: str) -> str:
+    if word in _STEM_MAP:
+        return _STEM_MAP[word]
+    if len(word) > 4 and word.endswith("s") and not word.endswith(("ss", "us", "is", "as")):
+        return word[:-1]
+    return word
+
+
 def _tokens(text: str) -> list[str]:
     words = re.findall(r"[a-z0-9]+", text.lower())
-    useful = [word for word in words if word not in _STOP and len(word) > 1]
+    useful = [_stem(word) for word in words if word not in _STOP and len(word) > 1]
     return useful or words
 
 

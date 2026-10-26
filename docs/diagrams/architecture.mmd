@@ -19,12 +19,12 @@ flowchart TD
   captions --> taskDb
   wake --> summaryPage
 
-  decisions[Decisions Requirements Risks]
-  bom[BOM and compare]
-  platform[Second meeting platform]
-  voice[Voice via a TTS API]
-  memory[Memory across past meetings]
-  dataflow[Transcript stays out of web search]
+  decisions["More Notion databases (Decisions, Requirements, Risks)"]
+  bom["Car parts / BOM tables and option comparisons"]
+  platform["Second meeting platform"]
+  voice["Voice replies via a TTS API"]
+  memory["Memory across past meetings"]
+  dataflow["Data flow: own KB; internet only to fetch data in, meeting data never sent out"]
 
   summaryPage -.-> decisions
   reply -.-> bom

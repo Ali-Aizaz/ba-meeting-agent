@@ -194,6 +194,8 @@ class Settings(BaseSettings):
         data["notion"]["token"] = "***"
         return f"Settings({data})"
 
+    __str__ = __repr__
+
 
 def _secret_text(secret: SecretStr | None) -> str | None:
     if secret is None:
@@ -219,9 +221,20 @@ def ensure_ready(settings: Settings) -> None:
         raise StartupError("Missing required secret: BA_NOTION__TOKEN")
 
 
+def validate_meet_url(url: str) -> str:
+    """Allow Google Meet URLs (and localhost fixtures for integration tests)."""
+    cleaned = url.strip()
+    if not cleaned:
+        raise StartupError("A Meet URL is required")
+    if cleaned.startswith("https://meet.google.com/"):
+        return cleaned
+    if cleaned.startswith(("http://127.0.0.1:", "http://localhost:")):
+        return cleaned
+    raise StartupError("Meet URL must start with https://meet.google.com/")
+
+
 def start_join(settings: Settings, url: str, launch_browser) -> None:
     """Validate secrets, then start the browser. Tests pass the launcher."""
-    if not url.strip():
-        raise StartupError("A Meet URL is required")
+    validate_meet_url(url)
     ensure_ready(settings)
     launch_browser()

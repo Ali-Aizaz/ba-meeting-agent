@@ -3,16 +3,37 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 
+from ba_agent.config import Settings
 from ba_agent.llm.parse import build_search_request, parse_response
 from ba_agent.models import LLMResponse, WebResult
 
 logger = logging.getLogger("ba_agent.llm")
 
+_INLINE_URL = re.compile(r"https?://[^\s)>\]\"']+", re.I)
+
 
 class OpenAIResponsesClient:
-    def __init__(self, *, api_key: str, model: str, base_url: str, timeout_s: float) -> None:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        *,
+        api_key: str = "",
+        model: str = "gpt-5.5",
+        base_url: str = "https://api.openai.com/v1",
+        timeout_s: float = 25.0,
+    ) -> None:
+        if settings is not None:
+            api_key = (
+                settings.llm.api_key.get_secret_value()
+                if settings.llm.api_key is not None
+                else api_key
+            )
+            model = settings.llm.model
+            base_url = settings.llm.base_url
+            timeout_s = settings.llm.timeout_s
         self.model = model
         self.timeout_s = timeout_s
         self._api_key = api_key
@@ -46,6 +67,7 @@ class OpenAIResponsesClient:
             model=self.model,
             input=input,
             tools=tool_list or None,
+            store=False,
             timeout=timeout_s or self.timeout_s,
         )
         logger.info(
@@ -66,4 +88,6 @@ class OpenAIResponsesClient:
             timeout_s=self.timeout_s,
         )
         urls = [citation.url for citation in response.citations]
+        if not urls and response.text:
+            urls = [url.rstrip(".,;:") for url in _INLINE_URL.findall(response.text)]
         return WebResult(text=response.text, urls=urls, queries=response.search_queries or [query])

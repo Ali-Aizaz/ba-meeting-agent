@@ -73,6 +73,16 @@ def parse_due(text: str, *, today: date, timezone_name: str = "UTC") -> date | N
     cleaned = " ".join(text.split())
     if not cleaned:
         return None
+    iso = re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", cleaned)
+    if iso:
+        try:
+            return date(int(iso.group(1)), int(iso.group(2)), int(iso.group(3)))
+        except ValueError:
+            return None
+    if re.search(r"\btomorrow\b", cleaned, re.I):
+        return today + timedelta(days=1)
+    if re.search(r"\btoday\b", cleaned, re.I):
+        return today
     named = re.search(rf"\bnext\s+({_DAY_PATTERN})\b", cleaned, re.I)
     if named:
         return _weekday(today, _DAYS[named.group(1).lower()], following_week=True)

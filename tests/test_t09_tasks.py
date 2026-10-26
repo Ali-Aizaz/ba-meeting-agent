@@ -5,7 +5,12 @@ from __future__ import annotations
 from datetime import date
 
 from ba_agent.tasks_extract.dates import format_date, parse_due
-from ba_agent.tasks_extract.extractor import apply_overheard, tasks_from_model_json
+from ba_agent.tasks_extract.extractor import (
+    apply_followup,
+    apply_overheard,
+    parse_task_command,
+    tasks_from_model_json,
+)
 
 TODAY = date(2026, 10, 25)
 
@@ -14,7 +19,24 @@ def test_t09_u1_dates() -> None:
     assert parse_due("Friday", today=TODAY) == date(2026, 10, 30)
     assert parse_due("next Wednesday", today=TODAY) == date(2026, 11, 4)
     assert parse_due("24 Oct", today=TODAY) == date(2026, 10, 24)
+    assert parse_due("tomorrow", today=TODAY) == date(2026, 10, 26)
+    assert parse_due("2026-10-30", today=TODAY) == date(2026, 10, 30)
     assert format_date(date(2026, 10, 24)) == "24 Oct"
+
+
+def test_t09_followup_fills_owner_and_due() -> None:
+    record = parse_task_command(
+        "add a task to review the charging port",
+        said_by="Sara",
+        time="[00:20]",
+        today=TODAY,
+    )
+    assert record is not None
+    assert record.owner == ""
+    assert record.due is None
+    completed = apply_followup(record, "for Ali by Friday", today=TODAY)
+    assert completed.owner == "Ali"
+    assert completed.due == date(2026, 10, 30)
 
 
 def test_t09_u2_json_to_task() -> None:

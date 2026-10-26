@@ -83,7 +83,13 @@ async def run_join(settings: Settings, url: str) -> None:
     )
 
     async def guarded_search(query: str) -> WebResult:
-        lines = [line.text for line in store.last(500)]
+        cleaned_query = " ".join(query.split()).lower()
+        lines = [
+            line.text
+            for line in store.last(500)
+            if not is_addressed_line(line.text)
+            and " ".join(line.text.split()).lower() != cleaned_query
+        ]
         people = store.participants()
         if not query_allowed(query, lines, people):
             cleaned = strip_meeting_text(query, lines, people)
@@ -190,9 +196,10 @@ async def _loops(settings, adapter, pump, store, aliases, trigger, agent, extrac
         )
         store.add_caption(line)
         await bus.publish("caption_committed", line)
-        for event in trigger.on_line(speaker, raw.text, "speech", raw.start_s, line.id):
+        events = trigger.on_line(speaker, raw.text, "speech", raw.start_s, line.id)
+        for event in events:
             await agent.handle(event)
-        if not is_addressed_line(raw.text):
+        if not events and not is_addressed_line(raw.text):
             extractor.note(line)
 
     async def captions() -> None:
@@ -345,10 +352,9 @@ class _Extractor:
             except Exception:
                 logger.exception("task extract failed")
                 continue
+            if records:
+                self.recent.clear()
             for record in records:
-                if record.key in self.seen:
-                    continue
-                self.seen.add(record.key)
                 result = await self.notion.create_task(record)
                 if result.page_id:
                     record.notion_page_id = result.page_id

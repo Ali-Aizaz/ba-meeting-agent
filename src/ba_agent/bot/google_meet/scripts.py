@@ -7,28 +7,74 @@ PAGE_OBSERVER_JS = r"""
   window.__baChatQueue = [];
   window.__baCaptionQueue = [];
   const seenChat = new Set();
+  let nextRowId = 0;
+  let nextChatId = 0;
+
+  try {
+    if (navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === "function") {
+      const origGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      navigator.mediaDevices.getUserMedia = function () {
+        return origGetUserMedia.apply(this, arguments).then((stream) => {
+          if (stream && typeof stream.getTracks === "function") {
+            stream.getTracks().forEach((track) => {
+              track.enabled = false;
+            });
+          }
+          return stream;
+        });
+      };
+    }
+  } catch (err) {}
 
   function region() {
     return document.querySelector('[role="region"][aria-label*="aption" i]')
       || document.querySelector("[data-ba-captions]");
   }
 
+  function chatRoot() {
+    return document.querySelector("[data-ba-chat-log]")
+      || document.querySelector('[aria-live="polite"]');
+  }
+
   function chatNodes() {
     const log = document.querySelector("[data-ba-chat-log]");
-    if (!log) return;
-    log.querySelectorAll("[data-chat-message]").forEach((node) => {
-      const id = node.getAttribute("data-chat-message") || node.innerText;
-      if (seenChat.has(id)) return;
-      seenChat.add(id);
-      window.__baChatQueue.push({
-        sender: node.getAttribute("data-sender") || "",
-        text: (node.innerText || "").trim(),
+    if (log) {
+      log.querySelectorAll("[data-chat-message]").forEach((node) => {
+        const id = node.getAttribute("data-chat-message") || node.innerText;
+        if (seenChat.has(id)) return;
+        seenChat.add(id);
+        window.__baChatQueue.push({
+          sender: node.getAttribute("data-sender") || "",
+          text: (node.innerText || "").trim(),
+        });
       });
+      return;
+    }
+    const sel = "[data-message-id], [data-message-text], .oIy2qc, [jsname='dTKtvb']";
+    document.querySelectorAll(sel).forEach((node) => {
+      if (!node.dataset.baChatId) {
+        node.dataset.baChatId = String(++nextChatId);
+      }
+      const id = node.getAttribute("data-message-id") || node.dataset.baChatId;
+      if (seenChat.has(id)) return;
+      const text = (node.getAttribute("data-message-text") || node.innerText || "").trim();
+      if (!text) return;
+      seenChat.add(id);
+      const group = node.closest("[data-sender-name], .Ss4fHf, .GDhqjd");
+      let sender = "";
+      if (group) {
+        sender = group.getAttribute("data-sender-name") || "";
+        if (!sender) {
+          const badge = group.querySelector(".HNucUd, .poVWob, .yt1Zbd");
+          if (badge) sender = (badge.innerText || "").trim();
+        }
+      }
+      window.__baChatQueue.push({sender, text});
     });
   }
 
   function attachChat() {
-    const log = document.querySelector("[data-ba-chat-log]");
+    const log = chatRoot();
     if (!log || log.dataset.baWatching === "1") return;
     log.dataset.baWatching = "1";
     chatNodes();
@@ -43,13 +89,34 @@ PAGE_OBSERVER_JS = r"""
     const root = region();
     if (!root) return;
     const rows = [];
-    root.querySelectorAll("[data-row]").forEach((row) => {
-      rows.push({
-        row_id: row.getAttribute("data-row") || "",
-        speaker: row.getAttribute("data-speaker") || "",
-        text: (row.innerText || "").trim(),
+    const dataRows = root.querySelectorAll("[data-row]");
+    if (dataRows.length > 0) {
+      dataRows.forEach((row) => {
+        rows.push({
+          row_id: row.getAttribute("data-row") || "",
+          speaker: row.getAttribute("data-speaker") || "",
+          text: (row.innerText || "").trim(),
+        });
       });
-    });
+    } else {
+      const blocks = root.querySelectorAll(".nMcdL, .TBMuR");
+      blocks.forEach((block) => {
+        if (!block.dataset.baRowId) {
+          block.dataset.baRowId = String(++nextRowId);
+        }
+        const speakerEl = block.querySelector(".NWpY1d, .KcIKyf, .zs7s8d");
+        const textEl = block.querySelector(".ygicle, .VbkSUe, .bh44bd, .iTTPOb, .CNusmb");
+        const speaker = speakerEl ? (speakerEl.innerText || "").trim() : "";
+        const text = textEl ? (textEl.innerText || "").trim() : "";
+        if (text) {
+          rows.push({
+            row_id: block.dataset.baRowId,
+            speaker,
+            text,
+          });
+        }
+      });
+    }
     window.__baCaptionQueue.push({items: rows});
     if (window.__baCaptionQueue.length > 50) {
       window.__baCaptionQueue = window.__baCaptionQueue.slice(-50);
