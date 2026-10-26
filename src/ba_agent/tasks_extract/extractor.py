@@ -14,6 +14,22 @@ _TASK_COMMAND = re.compile(
     r"^(?:please\s+)?(?:add|create)(?:\s+a)?\s+task(?:\s+for\s+(?P<owner>.+?))?\s+to\s+(?P<body>.+)$",
     re.I,
 )
+_TASK_CUE = re.compile(
+    r"\b(?:"
+    r"will|i'll|we'll|you'll|he'll|she'll|they'll|"
+    r"please|need\s+to|needs\s+to|should|let's|have\s+to|has\s+to|must|"
+    r"by|before|due|tomorrow|today|tonight|next\s+week|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+    r"mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun|"
+    r"send|update|prepare|book|review|share|draft|create|check|follow\s+up|"
+    r"schedule|finish|complete|assign|deliver|submit|write|fix|build|test"
+    r")\b",
+    re.I,
+)
+_QUESTION_COMMITMENT = re.compile(
+    r"\b(?:can\s+you|could\s+you|will\s+you|would\s+you|please)\b",
+    re.I,
+)
 
 
 def dedup_key(task: str, owner: str) -> str:
@@ -29,6 +45,17 @@ def is_task_request(question: str) -> bool:
 
 def is_addressed_line(text: str, *, fuzzy: bool = True, threshold: int = 85) -> bool:
     return match_wake(text, fuzzy=fuzzy, threshold=threshold) is not None
+
+
+def might_contain_task(text: str, *, today: date) -> bool:
+    cleaned = text.strip()
+    if not cleaned or is_addressed_line(cleaned):
+        return False
+    if cleaned.endswith("?") and _QUESTION_COMMITMENT.search(cleaned) is None:
+        return False
+    if parse_due(cleaned, today=today) is not None:
+        return True
+    return _TASK_CUE.search(cleaned) is not None
 
 
 def parse_task_command(question: str, *, said_by: str, time: str, today: date) -> TaskRecord | None:

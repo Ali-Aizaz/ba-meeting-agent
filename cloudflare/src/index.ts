@@ -75,11 +75,11 @@ function containerEnv(env: Env): Record<string, string> {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    if (request.method !== "GET" && request.method !== "HEAD") {
-      return new Response("Method Not Allowed\n", { status: 405 });
-    }
     const { pathname } = new URL(request.url);
-    if (pathname !== "/" && pathname !== "/status") {
+    if (
+      (request.method !== "GET" && request.method !== "HEAD") ||
+      (pathname !== "/" && pathname !== "/status")
+    ) {
       return new Response("Not Found\n", { status: 404 });
     }
     const container = env.BA_CONTAINER.get(env.BA_CONTAINER.idFromName("meeting"));

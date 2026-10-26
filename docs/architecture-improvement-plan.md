@@ -260,3 +260,59 @@ After implementing the phases above, we will verify with:
    - `tests/test_t13_guardrails.py`:
      - Test that individual participant names (`"what car does Sara drive"`) are blocked/stripped by `query_allowed()` / `strip_meeting_text()`.
      - Test that car model names are not falsely stripped as participant names.
+
+---
+
+## 5. Implementation Prompt
+
+Copy and paste the prompt below into an coding agent session to execute the full plan end-to-end:
+
+```markdown
+Implement the architecture, speed, cost, security, and reliability improvements specified in `docs/architecture-improvement-plan.md`.
+
+### Requirements & Execution Order
+
+1. **Read Context First**:
+   - Read `docs/architecture-improvement-plan.md` completely.
+   - Read the target files before editing:
+     - `src/ba_agent/session.py`
+     - `src/ba_agent/tasks_extract/extractor.py`
+     - `src/ba_agent/bot/google_meet/adapter.py`
+     - `src/ba_agent/memory/store.py`
+     - `src/ba_agent/notion/client.py`
+     - `src/ba_agent/agent/loop.py`
+     - `src/ba_agent/guardrails/search.py`
+     - `src/ba_agent/config.py` and `config/settings.yaml`
+     - `src/ba_agent/llm/openai_client.py`
+     - `cloudflare/src/index.ts`
+     - `docs/techsol-ba-architecture.html`
+
+2. **Phase 1 — Speed & Latency**:
+   - In `src/ba_agent/session.py` (`_loops`), decouple `agent.handle(event)` from `captions()`, `chats()`, and `ticks()` using an `asyncio.Queue` and a dedicated `replies()` worker task so slow LLM/web-search calls never block caption or chat polling.
+   - In `src/ba_agent/bot/google_meet/adapter.py`, add `self._ui_lock = asyncio.Lock()` to serialize `post_chat()` DOM interactions, and use fast text insertion (`target.fill(text)` for single-line or `self.page.keyboard.insert_text(line)` when available, with fallback to `target.type(line)` for test doubles).
+   - In `src/ba_agent/notion/client.py`, add an in-memory `self._task_cache: dict[str, str]` (`dedup_key -> page_id`) populated during `find_task()` and `create_task()` to avoid redundant full-database pagination.
+   - In `src/ba_agent/memory/store.py`, enable `PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;`, add composite indexes on `captions (meeting_id, start_s DESC, id DESC)` and `replies (meeting_id, id DESC)`, and rewrite `participants()` to use `SELECT speaker FROM captions WHERE meeting_id = ? AND speaker != '' GROUP BY speaker ORDER BY MIN(start_s), MIN(id)`.
+
+3. **Phase 2 — Cost Efficiency**:
+   - In `src/ba_agent/tasks_extract/extractor.py`, implement `might_contain_task(text: str, *, today: date) -> bool` to deterministically filter out casual non-task speech and addressed `"Hey BA"` questions before calling the LLM.
+   - In `src/ba_agent/session.py` (`_Extractor.run`), drain queued lines in a batch (`while not self.queue.empty(): ...`), remove the dead `is_car_question` check, and skip `self.llm.respond()` if none of the newly drained lines pass `might_contain_task()`.
+   - In `src/ba_agent/config.py` (`LLMSettings`), `config/settings.yaml`, and `src/ba_agent/llm/openai_client.py`, add optional `task_model: str = ""` support (defaulting to `llm.model` when empty) and pass `model_override` from `_Extractor.run()` only when `task_model` is configured so `FakeLLM` test doubles in the test suite remain 100% compatible.
+   - In `cloudflare/src/index.ts` (`default.fetch`), return a `404` response directly from the Worker for requests whose pathname is not `/` or `/status` (or methods other than `GET`/`HEAD`) so scanner/favicon traffic does not wake the 4 GiB container. Preserve all required config strings tested in `tests/test_t15_deploy.py`.
+
+4. **Phase 3 — Security & Data-Flow Boundaries**:
+   - In `src/ba_agent/guardrails/search.py`, update `query_allowed()` and `strip_meeting_text()` to also reject/strip individual participant names (using word-boundary matching `\b...\b` while excluding car brands from `ba_agent.knowledge.policy._BRANDS`).
+   - In `src/ba_agent/session.py` (`guarded_search`), exclude addressed `"Hey BA"` caption lines when passing recent `lines` to `query_allowed()` / `strip_meeting_text()` so the user's current car question is never stripped for matching its own just-committed caption row.
+   - In `src/ba_agent/agent/loop.py`, pass `tools=None` instead of `tools=local_tools()` in `_answer()`, and wrap `<meeting_digest>`, `<knowledge>`, `<web_results>`, and `<question>` in XML delimiters in `_prompt()` with an explicit instruction to treat their contents as untrusted data.
+
+5. **Phase 4 — Structural & Reliability Fixes**:
+   - In `src/ba_agent/notion/client.py`, track `self._transcript_appended: bool = False`. When `save_meeting()` creates a page via `POST /pages`, set `self._transcript_appended = True`. When `self.summary_page_id` already exists (e.g., created at join by `ensure_summary_page()`), after `PATCH /pages/{id}`, also call `PATCH /blocks/{id}/children` with `{"children": children}` if `not self._transcript_appended` and set `self._transcript_appended = True`. Update `_FakeNotion` in `tests/test_t11_notion.py` if needed to handle `/blocks/{id}/children`.
+   - In `src/ba_agent/session.py` (`SessionPoster`) and `src/ba_agent/memory/store.py`, record posted bot replies (`PostReason.REPLY` and `PostReason.CONFIRMATION`) via `store.add_reply(text)`, add `recent_replies(limit=5)`, and include recent bot replies in `store.digest()`.
+
+6. **Phase 5 — Update Architecture Documentation**:
+   - Update `docs/techsol-ba-architecture.html` detail blocks (`adapter`, `agent`, `extract`, `guard`, `memory`, `save`) and node annotations to reflect the non-blocking trigger queue, WebRTC SDP video rejection, task pre-filter + batching, Notion in-memory dedup cache, reply memory, and `PATCH /blocks/{id}/children` transcript toggle flow.
+
+7. **Verification**:
+   - Add unit and integration tests for all new behaviors in `tests/test_t09_tasks.py`, `tests/test_t10_memory.py`, `tests/test_t11_notion.py`, and `tests/test_t13_guardrails.py`.
+   - Run `uv run pytest -v` and `uv run ruff check .` and fix any issues until both pass cleanly.
+```
+

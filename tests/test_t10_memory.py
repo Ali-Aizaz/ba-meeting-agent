@@ -84,3 +84,30 @@ def test_t10_u3_long_transcript_is_stored_and_digest_is_capped(tmp_path: Path) -
     assert "OLDTOKEN" not in digest
     assert len(digest) // 4 < 4000
     store.close()
+
+
+def test_t10_participants_order_wal_indexes_and_replies(tmp_path: Path) -> None:
+    store = MeetingStore(tmp_path / "meeting.db", "m1")
+    store.add_caption(_line(5, "First from Omar", speaker="Omar"))
+    store.add_caption(_line(10, "Second from Sara", speaker="Sara"))
+    store.add_caption(_line(15, "Again from Omar", speaker="Omar"))
+    store.add_caption(_line(20, "Third from Ali", speaker="Ali"))
+    assert store.participants() == ["Omar", "Sara", "Ali"]
+
+    mode = store._conn.execute("PRAGMA journal_mode").fetchone()[0]
+    assert str(mode).lower() == "wal"
+    indexes = {
+        row["name"]
+        for row in store._conn.execute("PRAGMA index_list('captions')").fetchall()
+    }
+    assert "idx_captions_meeting_start" in indexes
+
+    for idx in range(7):
+        store.add_reply(f"Bot answer {idx}")
+    recent = store.recent_replies(limit=5)
+    assert recent == [f"Bot answer {idx}" for idx in range(2, 7)]
+    digest = store.digest()
+    assert "Bot replies:" in digest
+    assert "Bot answer 6" in digest
+    assert "Bot answer 0" not in digest
+    store.close()

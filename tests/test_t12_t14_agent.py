@@ -225,9 +225,10 @@ async def test_t12_function_call_create_task_and_search_knowledge() -> None:
                 )
             if self.calls == 1 and tools:
                 return LLMResponse(
+                    text="Let me check the knowledge base.",
                     function_calls=[
                         FunctionCall(name="search_knowledge", arguments={"query": "hybrid"})
-                    ]
+                    ],
                 )
             return LLMResponse(text="A hybrid uses an engine and motor (src: hybrid.md).")
 

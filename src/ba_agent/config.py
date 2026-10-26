@@ -55,6 +55,7 @@ class TriggerSettings(_Model):
 class LLMSettings(_Model):
     provider: str = "openai"
     model: str = "gpt-5.5"
+    task_model: str = ""
     api_key: SecretStr | None = None
     timeout_s: float = 25
     summary_timeout_s: float = 20

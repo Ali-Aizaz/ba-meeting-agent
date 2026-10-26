@@ -58,13 +58,15 @@ class OpenAIResponsesClient:
         *,
         enable_web_search: bool = False,
         timeout_s: float | None = None,
+        model_override: str | None = None,
     ) -> LLMResponse:
         tool_list = list(tools or [])
         if enable_web_search and not any(tool.get("type") == "web_search" for tool in tool_list):
             tool_list.append({"type": "web_search"})
+        chosen_model = model_override or self.model
         started = time.perf_counter()
         response = await self._sdk().responses.create(
-            model=self.model,
+            model=chosen_model,
             input=input,
             tools=tool_list or None,
             store=False,
@@ -72,7 +74,7 @@ class OpenAIResponsesClient:
         )
         logger.info(
             "llm respond model=%s web_search=%s duration_ms=%d",
-            self.model,
+            chosen_model,
             enable_web_search,
             int((time.perf_counter() - started) * 1000),
         )

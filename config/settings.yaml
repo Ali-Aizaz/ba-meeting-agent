@@ -21,6 +21,7 @@ trigger:
 llm:
   provider: openai
   model: gpt-5.5
+  task_model: ""
   timeout_s: 25
   summary_timeout_s: 20
   base_url: https://api.openai.com/v1

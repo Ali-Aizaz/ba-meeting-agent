@@ -56,6 +56,7 @@ class GoogleMeetAdapter:
         self.chat_enabled = True
         self.captions_enabled = False
         self.ended_event = asyncio.Event()
+        self._ui_lock = asyncio.Lock()
         self._admitted_at: float | None = None
         self._left = False
         self._chat = ChatReader(settings.meeting.bot_name)
@@ -167,28 +168,38 @@ class GoogleMeetAdapter:
     async def post_chat(self, text: str, reason: PostReason) -> bool:
         if not isinstance(reason, PostReason):
             return False
-        box = self.page.get_by_role("textbox", name=CHAT_BOX)
-        if await box.count() == 0:
-            opener = self.page.get_by_role("button", name=CHAT_BUTTON)
-            if await opener.count():
-                await opener.first.click()
-        if await box.count() == 0:
-            self.chat_enabled = False
-            logger.info("chat_enabled: false")
-            await self.screenshot("chat-disabled")
-            return False
-        self.chat_enabled = True
-        target = box.first
-        await target.click()
-        lines = text.split("\n")
-        await target.fill("")
-        for index, line in enumerate(lines):
-            if line:
-                await target.type(line)
-            if index < len(lines) - 1:
-                await target.press("Shift+Enter")
-        await target.press("Enter")
-        return True
+        async with self._ui_lock:
+            box = self.page.get_by_role("textbox", name=CHAT_BOX)
+            if await box.count() == 0:
+                opener = self.page.get_by_role("button", name=CHAT_BUTTON)
+                if await opener.count():
+                    await opener.first.click()
+            if await box.count() == 0:
+                self.chat_enabled = False
+                logger.info("chat_enabled: false")
+                await self.screenshot("chat-disabled")
+                return False
+            self.chat_enabled = True
+            target = box.first
+            await target.click()
+            lines = text.split("\n")
+            if len(lines) == 1:
+                await target.fill(lines[0])
+                await target.press("Enter")
+                return True
+            await target.fill("")
+            keyboard = getattr(self.page, "keyboard", None)
+            insert_text = getattr(keyboard, "insert_text", None)
+            for index, line in enumerate(lines):
+                if line:
+                    if callable(insert_text):
+                        await insert_text(line)
+                    else:
+                        await target.type(line)
+                if index < len(lines) - 1:
+                    await target.press("Shift+Enter")
+            await target.press("Enter")
+            return True
 
     async def collect_chat(self) -> list[ChatMessage]:
         nodes = await self.page.evaluate(

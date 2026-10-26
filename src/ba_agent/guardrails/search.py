@@ -4,12 +4,27 @@ from __future__ import annotations
 
 import re
 
+from ba_agent.knowledge.policy import _CAR_WORDS
+
 _INTERNAL_URL = re.compile(
     r"https?://(?:www\.)?(?:notion\.(?:so|site)|meet\.google\.com)/\S+",
     re.I,
 )
 _TIMESTAMP = re.compile(r"\[\d{1,2}:\d{2}(?::\d{2})?\]")
 _DIGEST_MARKER = re.compile(r"\b(?:meeting digest|participants)\s*:", re.I)
+
+
+def _participant_tokens(participants: list[str]) -> list[str]:
+    tokens: list[str] = []
+    for raw in participants:
+        cleaned = raw.strip()
+        if not cleaned:
+            continue
+        for candidate in (cleaned, *re.findall(r"[A-Za-z]+", cleaned)):
+            low = candidate.lower()
+            if len(low) >= 3 and low not in _CAR_WORDS and candidate not in tokens:
+                tokens.append(candidate)
+    return sorted(tokens, key=len, reverse=True)
 
 
 def query_allowed(query: str, caption_lines: list[str], participants: list[str]) -> bool:
@@ -27,8 +42,9 @@ def query_allowed(query: str, caption_lines: list[str], participants: list[str])
         blob = ", ".join(names).lower()
         if blob in lowered:
             return False
-    for name in names:
-        if len(name) >= 3 and re.search(rf"\b{re.escape(name.lower())}\b", lowered):
+    for token in _participant_tokens(names):
+        low = token.lower()
+        if re.search(rf"\b{re.escape(low)}\b", lowered):
             return False
     return True
 
@@ -45,7 +61,6 @@ def strip_meeting_text(query: str, caption_lines: list[str], participants: list[
     if len(names) >= 2:
         blob = ", ".join(names)
         cleaned = re.sub(re.escape(blob), " ", cleaned, flags=re.I)
-    for name in names:
-        if len(name) >= 3:
-            cleaned = re.sub(rf"\b{re.escape(name)}\b", " ", cleaned, flags=re.I)
+    for token in _participant_tokens(names):
+        cleaned = re.sub(rf"\b{re.escape(token)}\b", " ", cleaned, flags=re.I)
     return " ".join(cleaned.split())

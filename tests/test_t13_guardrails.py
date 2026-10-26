@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ba_agent.agent.loop import _prompt
 from ba_agent.guardrails.citations import NOT_SURE, finalize_reply, reply_status
 from ba_agent.guardrails.search import query_allowed, strip_meeting_text
 from ba_agent.logging_setup import redact_secrets
@@ -55,3 +56,37 @@ def test_t13_log_redacts_secrets() -> None:
     assert "secret_1234567890abcdef" not in redacted
     assert "sk-proj-1234567890abcdef" not in redacted
     assert "[REDACTED]" in redacted
+
+
+def test_t13_individual_participant_names_and_car_brands_preserved() -> None:
+    participants = ["Sara Khan", "Ali", "Ford"]
+    assert query_allowed("what car does Sara drive", [], participants) is False
+    assert query_allowed("what car does Khan drive", [], participants) is False
+    assert query_allowed("2026 Ford hybrid price", [], participants) is True
+    stripped = strip_meeting_text(
+        "Sara Khan asked about the 2026 Ford Camry hybrid price",
+        [],
+        participants,
+    )
+    assert "sara" not in stripped.lower()
+    assert "khan" not in stripped.lower()
+    assert "ford" in stripped.lower()
+    assert "camry" in stripped.lower()
+    assert query_allowed(stripped, [], participants) is True
+
+
+def test_t13_prompt_uses_xml_delimiters_for_untrusted_context() -> None:
+    rendered = _prompt(
+        "You are TechSol BA.",
+        "Participants: Sara",
+        "what is a hybrid?",
+        [],
+        None,
+        True,
+    )
+    assert "<meeting_digest>" in rendered
+    assert "</meeting_digest>" in rendered
+    assert "<knowledge>" in rendered
+    assert "<web_results>" in rendered
+    assert "<question>what is a hybrid?</question>" in rendered
+    assert "untrusted data" in rendered

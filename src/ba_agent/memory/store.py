@@ -25,6 +25,8 @@ class MeetingStore:
     def _init(self) -> None:
         self._conn.executescript(
             """
+            PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
             CREATE TABLE IF NOT EXISTS captions (
                 id TEXT PRIMARY KEY,
                 meeting_id TEXT NOT NULL,
@@ -58,6 +60,10 @@ class MeetingStore:
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+            CREATE INDEX IF NOT EXISTS idx_captions_meeting_start
+                ON captions (meeting_id, start_s DESC, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_replies_meeting
+                ON replies (meeting_id, id DESC);
             """
         )
         self._conn.commit()
@@ -164,17 +170,35 @@ class MeetingStore:
             )
             self._conn.commit()
 
+    def recent_replies(self, limit: int = 5) -> list[str]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT text FROM replies WHERE meeting_id = ?
+                ORDER BY id DESC LIMIT ?
+                """,
+                (self.meeting_id, limit),
+            ).fetchall()
+        return [str(row["text"]) for row in reversed(rows)]
+
     def participants(self) -> list[str]:
-        names: list[str] = []
-        for line in self.last(100000):
-            if line.speaker and line.speaker not in names:
-                names.append(line.speaker)
-        return names
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT speaker FROM captions
+                WHERE meeting_id = ? AND speaker != ''
+                GROUP BY speaker
+                ORDER BY MIN(start_s), MIN(id)
+                """,
+                (self.meeting_id,),
+            ).fetchall()
+        return [str(row["speaker"]) for row in rows]
 
     def digest(self, max_tokens: int = 3000) -> str:
         lines = self.last(100000)
         task_rows = self.tasks()
         speakers = self.participants()
+        replies = self.recent_replies(limit=5)
         header = "Participants: " + (", ".join(speakers) if speakers else "none")
         if task_rows:
             task_block = "Tasks:\n" + "\n".join(
@@ -182,10 +206,18 @@ class MeetingStore:
             )
         else:
             task_block = "Tasks:\nnone"
+        reply_block = (
+            "Bot replies:\n" + "\n".join(f"- {reply}" for reply in replies) if replies else ""
+        )
         rendered = [
             f"{format_meeting_time(line.start_s)} {line.speaker}: {line.text}" for line in lines
         ]
-        used = _tokens(header) + _tokens(task_block) + _tokens("Recent:")
+        used = (
+            _tokens(header)
+            + _tokens(task_block)
+            + (_tokens(reply_block) if reply_block else 0)
+            + _tokens("Recent:")
+        )
         chosen: list[str] = []
         for row in reversed(rendered):
             cost = _tokens(row)
@@ -194,7 +226,11 @@ class MeetingStore:
             chosen.append(row)
             used += cost
         chosen.reverse()
-        return "\n".join([header, task_block, "Recent:", *chosen])
+        sections = [header, task_block]
+        if reply_block:
+            sections.append(reply_block)
+        sections.extend(["Recent:", *chosen])
+        return "\n".join(sections)
 
     def set_meta(self, key: str, value: str) -> None:
         with self._lock:

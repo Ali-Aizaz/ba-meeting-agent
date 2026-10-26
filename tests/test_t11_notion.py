@@ -90,6 +90,14 @@ class _FakeNotion:
             else:
                 self.summaries.append(page)
             return httpx.Response(200, json=page)
+        if request.method == "PATCH" and path.endswith("/children"):
+            parts = path.rstrip("/").split("/")
+            page_id = parts[-2] if len(parts) >= 2 else ""
+            for page in self.summaries:
+                if page["id"] == page_id:
+                    page.setdefault("children", []).extend(body.get("children") or [])
+                    return httpx.Response(200, json={"results": page["children"]})
+            return httpx.Response(404, json={"message": "missing"})
         if request.method == "PATCH":
             page_id = path.rstrip("/").split("/")[-1]
             for page in self.summaries:
@@ -177,4 +185,72 @@ async def test_t11_missing_property_refuses_startup() -> None:
     service = _service(fake)
     with pytest.raises(StartupError, match="Due"):
         await service.verify()
+    await service.aclose()
+
+
+@pytest.mark.asyncio
+async def test_t11_ensure_summary_page_then_save_appends_transcript_toggle() -> None:
+    fake = _FakeNotion()
+    service = _service(fake)
+    await service.verify()
+    initial_url = await service.ensure_summary_page("TechSol BA m1")
+    assert initial_url.startswith("https://www.notion.so/")
+    assert service._transcript_appended is False
+
+    saved_url = await service.save_meeting("Summary text", "[00:05] Sara: hi there", [])
+    assert saved_url == initial_url
+    assert service._transcript_appended is True
+    child_patches = [
+        call
+        for call in fake.calls
+        if call[0] == "PATCH" and call[1].endswith(f"/blocks/{service.summary_page_id}/children")
+    ]
+    assert len(child_patches) == 1
+    assert "Sara: hi there" in json.dumps(child_patches[0][2])
+
+    # A second save updates page properties without re-appending duplicate transcript toggles.
+    await service.save_meeting("Updated summary", "[00:05] Sara: hi there", [])
+    child_patches_after = [
+        call
+        for call in fake.calls
+        if call[0] == "PATCH" and call[1].endswith(f"/blocks/{service.summary_page_id}/children")
+    ]
+    assert len(child_patches_after) == 1
+    await service.aclose()
+
+
+@pytest.mark.asyncio
+async def test_t11_task_cache_avoids_redundant_database_queries() -> None:
+    fake = _FakeNotion()
+    service = _service(fake)
+    await service.verify()
+    record = TaskRecord(
+        task="prepare slides",
+        owner="Sara",
+        due=date(2026, 10, 30),
+        due_text="Friday",
+        said_by="Ali",
+        time="[02:00]",
+        key=dedup_key("prepare slides", "Sara"),
+    )
+    first = await service.create_task(record)
+    second = await service.create_task(record)
+    third = await service.create_task(record)
+    other = await service.create_task(
+        TaskRecord(
+            task="book test drive",
+            owner="Ali",
+            due=date(2026, 10, 30),
+            due_text="Friday",
+            said_by="Sara",
+            time="[02:30]",
+            key=dedup_key("book test drive", "Ali"),
+        )
+    )
+    assert first.created is True
+    assert second.created is False
+    assert third.created is False
+    assert other.created is True
+    query_calls = [call for call in fake.calls if call[1].endswith("/query")]
+    assert len(query_calls) == 1
     await service.aclose()

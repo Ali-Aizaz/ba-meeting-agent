@@ -69,7 +69,9 @@ class NotionService:
         self.timezone_name = timezone_name
         self.summary_page_id = summary_page_id
         self.summary_url = summary_url
-        self._toggle_written = False
+        self._task_cache: dict[str, str] = {}
+        self._tasks_loaded: bool = False
+        self._transcript_appended: bool = False
         self.task_parent: dict = {"database_id": schema.tasks_db} if schema.tasks_db else {}
         self.summary_parent: dict = {"database_id": schema.summary_db} if schema.summary_db else {}
         self._limiter = _Limiter(min_interval)
@@ -152,12 +154,12 @@ class NotionService:
                 "POST",
                 "/pages",
                 payload,
-                dedup_lookup=lambda: self.find_task(key),
+                dedup_lookup=lambda: self.find_task(key, refresh=True),
             )
         except Exception:
             logger.exception("notion task create failed")
             try:
-                existing = await self.find_task(key)
+                existing = await self.find_task(key, refresh=True)
             except Exception:
                 existing = None
             if existing:
@@ -169,13 +171,17 @@ class NotionService:
                 )
             return TaskWrite(False, task_failed(record.task), key=key)
         if created.get("_existing"):
+            existing_id = created["_existing"]
+            self._task_cache[key] = existing_id
             return TaskWrite(
                 False,
                 already_tracked(record.owner, record.task),
-                page_id=created["_existing"],
+                page_id=existing_id,
                 key=key,
             )
         page_id = created.get("id")
+        if page_id:
+            self._task_cache[key] = page_id
         return TaskWrite(
             True,
             task_added(record.owner, record.task, record.due_text, record.due),
@@ -183,8 +189,12 @@ class NotionService:
             key=key,
         )
 
-    async def find_task(self, key: str) -> str | None:
+    async def find_task(self, key: str, *, refresh: bool = False) -> str | None:
         if not self.schema.tasks_db:
+            return None
+        if not refresh and key in self._task_cache:
+            return self._task_cache[key]
+        if not refresh and self._tasks_loaded:
             return None
         cursor = None
         title_name = self.schema.task_props["task"].name
@@ -198,10 +208,17 @@ class NotionService:
                 props = page.get("properties") or {}
                 task = plain_property(props.get(title_name) or {})
                 owner = plain_property(props.get(owner_name) or {})
-                if dedup_key(task, owner) == key:
-                    return page.get("id")
+                row_key = dedup_key(task, owner)
+                page_id = page.get("id")
+                if row_key and page_id:
+                    self._task_cache[row_key] = page_id
+                if row_key == key:
+                    if not data.get("has_more"):
+                        self._tasks_loaded = True
+                    return page_id
             if not data.get("has_more"):
-                return None
+                self._tasks_loaded = True
+                return self._task_cache.get(key)
             cursor = data.get("next_cursor")
 
     async def save_meeting(self, summary: str, transcript: str, tasks: list[TaskRecord]) -> str:
@@ -230,23 +247,20 @@ class NotionService:
             )
             self.summary_page_id = created.get("id", "")
             self.summary_url = created.get("url", "")
-            self._toggle_written = True
+            self._transcript_appended = True
             return self.summary_url
         await self._request(
             "PATCH",
             f"/pages/{self.summary_page_id}",
             {"properties": properties},
         )
-        if not self._toggle_written:
-            try:
-                await self._request(
-                    "PATCH",
-                    f"/blocks/{self.summary_page_id}/children",
-                    {"children": children},
-                )
-                self._toggle_written = True
-            except Exception:
-                logger.info("transcript toggle append skipped")
+        if not self._transcript_appended:
+            await self._request(
+                "PATCH",
+                f"/blocks/{self.summary_page_id}/children",
+                {"children": children},
+            )
+            self._transcript_appended = True
         return self.summary_url
 
     def saved_message(self) -> str:

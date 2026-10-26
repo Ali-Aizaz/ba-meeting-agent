@@ -16,19 +16,22 @@ from ba_agent.captions.stabilize import Stabilizer
 from ba_agent.config import Settings, ensure_ready, read_prompt, resolve_path
 from ba_agent.events import EventBus
 from ba_agent.guardrails.search import query_allowed, strip_meeting_text
-from ba_agent.knowledge.policy import is_car_question
 from ba_agent.knowledge.search import KnowledgeIndex
 from ba_agent.llm import build_llm
 from ba_agent.logging_setup import configure_logging, set_meeting_id
 from ba_agent.memory.store import MeetingStore, open_meeting
-from ba_agent.models import CaptionLine, PostReason, TaskRecord, WebResult
+from ba_agent.models import CaptionLine, PostReason, TaskRecord, TriggerEvent, WebResult
 from ba_agent.notion.client import NotionService, TaskWrite
 from ba_agent.notion.messages import notes_saved, task_failed
 from ba_agent.notion.schema import load_notion_schema
 from ba_agent.speakers import is_bot_speaker, load_aliases, normalize_speaker
 from ba_agent.status import StatusState, start_status_server
 from ba_agent.tasks_extract.dates import today_in
-from ba_agent.tasks_extract.extractor import apply_overheard, is_addressed_line
+from ba_agent.tasks_extract.extractor import (
+    apply_overheard,
+    is_addressed_line,
+    might_contain_task,
+)
 from ba_agent.trigger.detector import TriggerDetector
 
 logger = logging.getLogger("ba_agent.session")
@@ -44,14 +47,26 @@ def _let_cleanup_finish() -> None:
 
 
 class SessionPoster:
-    def __init__(self, adapter: GoogleMeetAdapter, gate: OutputGate) -> None:
+    def __init__(
+        self,
+        adapter: GoogleMeetAdapter,
+        gate: OutputGate,
+        store: MeetingStore | None = None,
+    ) -> None:
         self.adapter = adapter
         self.gate = gate
+        self.store = store
 
     async def post(self, text: str, reason: PostReason, trigger_id: str | None = None) -> bool:
         if not self.gate.allow(reason, trigger_id):
             return False
-        return await self.adapter.post_chat(text, reason)
+        posted = await self.adapter.post_chat(text, reason)
+        if posted and self.store is not None and reason in {
+            PostReason.REPLY,
+            PostReason.CONFIRMATION,
+        }:
+            self.store.add_reply(text)
+        return posted
 
 
 async def run_join(settings: Settings, url: str) -> None:
@@ -73,7 +88,7 @@ async def run_join(settings: Settings, url: str) -> None:
     knowledge = KnowledgeIndex(resolve_path(settings.knowledge.dir), settings.knowledge.min_score)
     aliases = load_aliases(resolve_path(settings.speakers.aliases_file))
     adapter = GoogleMeetAdapter(settings)
-    poster = SessionPoster(adapter, OutputGate())
+    poster = SessionPoster(adapter, OutputGate(), store)
     trigger = TriggerDetector(
         pause_wait_s=settings.trigger.pause_wait_s,
         dedup_window_s=settings.trigger.dedup_window_s,
@@ -82,12 +97,15 @@ async def run_join(settings: Settings, url: str) -> None:
         extra_phrases=settings.trigger.phrases,
     )
 
+    addressed_caption_ids: set[str] = set()
+
     async def guarded_search(query: str) -> WebResult:
         cleaned_query = " ".join(query.split()).lower()
         lines = [
             line.text
             for line in store.last(500)
-            if not is_addressed_line(line.text)
+            if line.id not in addressed_caption_ids
+            and not is_addressed_line(line.text)
             and " ".join(line.text.split()).lower() != cleaned_query
         ]
         people = store.participants()
@@ -110,7 +128,10 @@ async def run_join(settings: Settings, url: str) -> None:
         return result
 
     async def save_meeting() -> str:
-        return await _save(settings, store, notion, llm, announce=True, poster=poster)
+        url = await _save(settings, store, notion, llm, announce=False, poster=poster)
+        if url:
+            store.set_meta("save_announced", "1")
+        return url
 
     async def leave() -> None:
         adapter.ended_event.set()
@@ -154,7 +175,16 @@ async def run_join(settings: Settings, url: str) -> None:
                     status.chat_enabled,
                 )
                 await _loops(
-                    settings, adapter, pump, store, aliases, trigger, agent, extractor, bus
+                    settings,
+                    adapter,
+                    pump,
+                    store,
+                    aliases,
+                    trigger,
+                    agent,
+                    extractor,
+                    bus,
+                    addressed_caption_ids,
                 )
                 break
             except Exception:
@@ -166,7 +196,11 @@ async def run_join(settings: Settings, url: str) -> None:
     finally:
         _let_cleanup_finish()
         try:
-            if store.get_meta("save_announced") != "1":
+            current_sig = f"{store.count_captions()}:{len(store.tasks())}"
+            if (
+                store.get_meta("save_announced") != "1"
+                or store.get_meta("saved_sig") != current_sig
+            ):
                 await _save(settings, store, notion, llm, announce=True, poster=poster)
         except Exception:
             logger.exception("final save failed")
@@ -179,7 +213,20 @@ async def run_join(settings: Settings, url: str) -> None:
             server.shutdown()
 
 
-async def _loops(settings, adapter, pump, store, aliases, trigger, agent, extractor, bus) -> None:
+async def _loops(
+    settings,
+    adapter,
+    pump,
+    store,
+    aliases,
+    trigger,
+    agent,
+    extractor,
+    bus,
+    addressed_caption_ids: set[str] | None = None,
+) -> None:
+    trigger_queue: asyncio.Queue[TriggerEvent | None] = asyncio.Queue()
+
     async def on_caption(raw) -> None:
         speaker = normalize_speaker(raw.speaker, aliases)
         if is_bot_speaker(speaker, settings.meeting.bot_name):
@@ -197,8 +244,14 @@ async def _loops(settings, adapter, pump, store, aliases, trigger, agent, extrac
         store.add_caption(line)
         await bus.publish("caption_committed", line)
         events = trigger.on_line(speaker, raw.text, "speech", raw.start_s, line.id)
+        if addressed_caption_ids is not None and (
+            events
+            or is_addressed_line(raw.text)
+            or getattr(trigger, "_pending", None) is not None
+        ):
+            addressed_caption_ids.add(line.id)
         for event in events:
-            await agent.handle(event)
+            trigger_queue.put_nowait(event)
         if not events and not is_addressed_line(raw.text):
             extractor.note(line)
 
@@ -218,14 +271,21 @@ async def _loops(settings, adapter, pump, store, aliases, trigger, agent, extrac
                     continue
                 now = adapter.meeting_seconds()
                 for event in trigger.on_line(message.sender, message.text, "chat", now, None):
-                    await agent.handle(event)
+                    trigger_queue.put_nowait(event)
             await asyncio.sleep(0.3)
 
     async def ticks() -> None:
         while not adapter.ended_event.is_set():
             for event in trigger.tick(adapter.meeting_seconds()):
-                await agent.handle(event)
+                trigger_queue.put_nowait(event)
             await asyncio.sleep(0.5)
+
+    async def replies() -> None:
+        while not adapter.ended_event.is_set():
+            event = await trigger_queue.get()
+            if event is None or adapter.ended_event.is_set():
+                return
+            await agent.handle(event)
 
     async def alone() -> None:
         alone_for = 0.0
@@ -238,35 +298,46 @@ async def _loops(settings, adapter, pump, store, aliases, trigger, agent, extrac
                 return
             await asyncio.sleep(1)
 
-    tasks = [
+    poller_tasks = [
         asyncio.create_task(captions()),
         asyncio.create_task(chats()),
         asyncio.create_task(ticks()),
         asyncio.create_task(alone()),
+    ]
+    worker_tasks = [
+        asyncio.create_task(replies()),
         asyncio.create_task(extractor.run()),
     ]
     try:
         await adapter.ended_event.wait()
     finally:
         _let_cleanup_finish()
-        extractor.stop()
-        for task in tasks:
+        for task in poller_tasks:
             task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(*poller_tasks, return_exceptions=True)
+        trigger_queue.put_nowait(None)
+        extractor.stop()
+        _done, pending = await asyncio.wait(worker_tasks, timeout=5.0)
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
 
 async def _save(settings, store, notion, llm, *, announce: bool, poster: SessionPoster) -> str:
     if notion is None or not notion.schema.summary_db:
         return ""
     lines = store.last(100000)
+    tasks = store.tasks()
     transcript = "\n".join(
         f"{format_meeting_time(line.start_s)} {line.speaker}: {line.text}" for line in lines
     )
     summary = await _summarize(llm, transcript, settings.llm.summary_timeout_s)
-    url = await notion.save_meeting(summary, transcript, store.tasks())
+    url = await notion.save_meeting(summary, transcript, tasks)
     store.set_meta("summary_page_id", notion.summary_page_id)
     store.set_meta("summary_url", url)
     store.set_meta("saved", "1")
+    store.set_meta("saved_sig", f"{len(lines)}:{len(tasks)}")
     if announce and url and store.get_meta("save_announced") != "1":
         await poster.post(notes_saved(url), PostReason.MEETING_SAVED)
         store.set_meta("save_announced", "1")
@@ -313,8 +384,6 @@ class _Extractor:
         self._stopped = False
 
     def note(self, line: CaptionLine) -> None:
-        self.recent.append(line)
-        self.recent = self.recent[-8:]
         self.queue.put_nowait(line)
 
     def stop(self) -> None:
@@ -322,41 +391,59 @@ class _Extractor:
         self.queue.put_nowait(None)
 
     async def run(self) -> None:
-        while not self._stopped:
-            line = await self.queue.get()
-            if line is None or self._stopped:
+        while True:
+            first = await self.queue.get()
+            if first is None:
                 return
-            if not self.settings.tasks.auto_create:
-                continue
-            if self.notion is None or not self.notion.schema.tasks_db:
-                continue
-            if is_addressed_line(line.text) or is_car_question(line.text, []):
-                # A question to the bot is not a task. Car questions are handled by Hey BA.
-                if is_addressed_line(line.text):
-                    continue
-            try:
-                window = "\n".join(f"{item.speaker}: {item.text}" for item in self.recent)
-                prompt = read_prompt("tasks.md") + "\n\n" + window
-                response = await self.llm.respond(
-                    prompt,
-                    enable_web_search=False,
-                    timeout_s=self.settings.llm.summary_timeout_s,
-                )
-                records, _chats = apply_overheard(
-                    line.text,
-                    response.text,
-                    said_by=line.speaker,
-                    time=format_meeting_time(line.start_s),
-                    today=today_in(self.settings.meeting.timezone),
-                )
-            except Exception:
-                logger.exception("task extract failed")
-                continue
-            if records:
-                self.recent.clear()
-            for record in records:
-                result = await self.notion.create_task(record)
-                if result.page_id:
-                    record.notion_page_id = result.page_id
-                    self.store.add_task(record)
-                await self.poster.post(result.message, PostReason.CONFIRMATION)
+            batch = [first]
+            stop_after = False
+            while not self.queue.empty():
+                nxt = self.queue.get_nowait()
+                if nxt is None:
+                    stop_after = True
+                    break
+                batch.append(nxt)
+            self.recent.extend(batch)
+            self.recent = self.recent[-8:]
+            if (
+                self.settings.tasks.auto_create
+                and self.notion is not None
+                and self.notion.schema.tasks_db
+            ):
+                candidates = [item for item in batch if not is_addressed_line(item.text)]
+                today = today_in(self.settings.meeting.timezone)
+                matching = [
+                    item for item in candidates if might_contain_task(item.text, today=today)
+                ]
+                if matching:
+                    line = matching[-1]
+                    try:
+                        window = "\n".join(f"{item.speaker}: {item.text}" for item in self.recent)
+                        prompt = read_prompt("tasks.md") + "\n\n" + window
+                        kwargs: dict = {
+                            "enable_web_search": False,
+                            "timeout_s": self.settings.llm.summary_timeout_s,
+                        }
+                        if self.settings.llm.task_model:
+                            kwargs["model_override"] = self.settings.llm.task_model
+                        response = await self.llm.respond(prompt, **kwargs)
+                        records, _chats = apply_overheard(
+                            line.text,
+                            response.text,
+                            said_by=line.speaker,
+                            time=format_meeting_time(line.start_s),
+                            today=today,
+                        )
+                    except Exception:
+                        logger.exception("task extract failed")
+                        records = []
+                    if records:
+                        self.recent.clear()
+                    for record in records:
+                        result = await self.notion.create_task(record)
+                        if result.page_id:
+                            record.notion_page_id = result.page_id
+                            self.store.add_task(record)
+                        await self.poster.post(result.message, PostReason.CONFIRMATION)
+            if stop_after or self._stopped:
+                return

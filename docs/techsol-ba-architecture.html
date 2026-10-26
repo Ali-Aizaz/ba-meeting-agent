@@ -185,7 +185,7 @@
               <p class="hint">One browser. Captions are Meet’s own transcript.</p>
             </div>
             <div class="row">
-              <div class="box"><button type="button" class="node" data-id="adapter" data-hot="reply task save" data-boundary="false"><strong>Meet adapter</strong><span class="sub">Playwright · TechSol BA</span><span class="boundary-note">Stays on the server</span></button></div>
+              <div class="box"><button type="button" class="node" data-id="adapter" data-hot="reply task save" data-boundary="false"><strong>Meet adapter</strong><span class="sub">Playwright · SDP audio-only</span><span class="boundary-note">Stays on the server</span></button></div>
               <div class="link" data-from="adapter" data-to="meet" aria-hidden="true"></div>
               <div class="box"><button type="button" class="node" data-id="meet" data-hot="reply task save" data-boundary="false"><strong>Google Meet</strong><span class="sub">People speak and type</span><span class="boundary-note">The call itself</span></button></div>
               <div class="link" data-from="meet" data-to="captions" aria-hidden="true"></div>
@@ -200,14 +200,14 @@
           <section>
             <div class="lane-head">
               <h3>Addressed loop</h3>
-              <p class="hint">Quiet until someone says “Hey BA”.</p>
+              <p class="hint">Quiet until someone says “Hey BA”. Runs on a non-blocking async trigger queue.</p>
             </div>
             <div class="row">
               <div class="box"><button type="button" class="node" data-id="wake" data-hot="reply save" data-boundary="false"><strong>Wake phrase</strong><span class="sub">From a caption or chat line</span><span class="boundary-note">Stays on the server</span></button></div>
               <div class="link" data-from="wake" data-to="agent" aria-hidden="true"></div>
-              <div class="box"><button type="button" class="node" data-id="agent" data-hot="reply save" data-boundary="true"><strong>Agent loop</strong><span class="sub">Persona, digest, tools</span><span class="boundary-note">Sends the digest and the question</span></button></div>
+              <div class="box"><button type="button" class="node" data-id="agent" data-hot="reply save" data-boundary="true"><strong>Agent loop</strong><span class="sub">Async queue → OpenAI / Web / Notion</span><span class="boundary-note">Sends XML-delimited digest and question</span></button></div>
               <div class="link" data-from="agent" data-to="guard" aria-hidden="true"></div>
-              <div class="box"><button type="button" class="node" data-id="guard" data-hot="reply" data-boundary="true"><strong>Guardrails</strong><span class="sub">Cite, or say not sure</span><span class="boundary-note">Blocks an uncited car fact</span></button></div>
+              <div class="box"><button type="button" class="node" data-id="guard" data-hot="reply" data-boundary="true"><strong>Guardrails</strong><span class="sub">Cite, scrub names, XML tags</span><span class="boundary-note">Blocks uncited car facts and leaked names</span></button></div>
               <div class="link" data-from="guard" data-to="post" aria-hidden="true"></div>
               <div class="box"><button type="button" class="node" data-id="post" data-hot="reply save" data-boundary="false"><strong>Chat reply</strong><span class="sub">post_chat · REPLY</span><span class="boundary-note">Answer goes back into the call</span></button></div>
             </div>
@@ -222,10 +222,10 @@
           <section>
             <div class="lane-head">
               <h3>Background loop</h3>
-              <p class="hint">A complete task is written to Notion, then confirmed in chat.</p>
+              <p class="hint">Local pre-filter + batching before calling OpenAI; complete tasks write to Notion with an in-memory dedup cache.</p>
             </div>
             <div class="row">
-              <div class="box"><button type="button" class="node" data-id="extract" data-hot="task" data-boundary="true"><strong>Task extractor</strong><span class="sub">Caption lines, in the background</span><span class="boundary-note">Sends a caption window to the model</span></button></div>
+              <div class="box"><button type="button" class="node" data-id="extract" data-hot="task" data-boundary="true"><strong>Task extractor</strong><span class="sub">Pre-filter + batch → OpenAI / Notion</span><span class="boundary-note">Sends filtered caption window to the model</span></button></div>
               <div class="link" data-from="extract" data-to="confirm" aria-hidden="true"></div>
               <div class="box"><button type="button" class="node" data-id="confirm" data-hot="task" data-boundary="false"><strong>Confirmation</strong><span class="sub">Task added, or already tracked</span><span class="boundary-note">Confirmation goes back into the call</span></button></div>
             </div>
@@ -234,12 +234,12 @@
           <section>
             <div class="lane-head">
               <h3>This meeting</h3>
-              <p class="hint">Digest goes into the next reply. The full log is what save writes.</p>
+              <p class="hint">Digest (including recent bot replies) goes into the next reply. The full log is what save writes.</p>
             </div>
             <div class="row">
-              <div class="box"><button type="button" class="node" data-id="memory" data-hot="reply task save" data-boundary="false"><strong>Meeting memory</strong><span class="sub">SQLite · this meeting only</span><span class="boundary-note">Stays in SQLite on the server</span></button></div>
+              <div class="box"><button type="button" class="node" data-id="memory" data-hot="reply task save" data-boundary="false"><strong>Meeting memory</strong><span class="sub">SQLite WAL · captions, tasks, replies</span><span class="boundary-note">Stays in SQLite on the server</span></button></div>
               <div class="link" data-from="memory" data-to="save" aria-hidden="true"></div>
-              <div class="box"><button type="button" class="node" data-id="save" data-hot="save" data-boundary="true"><strong>save_meeting</strong><span class="sub">On request, and at the end</span><span class="boundary-note">Sends the notes to Notion</span></button></div>
+              <div class="box"><button type="button" class="node" data-id="save" data-hot="save" data-boundary="true"><strong>save_meeting</strong><span class="sub">PATCH page + transcript toggle → Notion</span><span class="boundary-note">Sends the notes and transcript toggle to Notion</span></button></div>
             </div>
           </section>
         </div>
@@ -292,7 +292,7 @@
       </div>
       <div class="detail-block" data-detail="adapter" hidden>
         <div class="detail-head"><h2>Meet adapter</h2><button type="button" class="clear">Whole meeting</button></div>
-        <p>Chromium runs headed under Xvfb on the cloud server, one meeting at a time. It joins Google Meet as TechSol BA (a saved sign-in, or a guest the host admits), with the mic and camera off. The first chat line is the consent notice. It turns captions on, leaves one minute after it is alone, and saves before it goes. Chat posts are allowed only for consent, a reply, a task confirmation, or the saved-notes link.</p>
+        <p>Chromium runs headed under Xvfb on the cloud server, one meeting at a time. It joins Google Meet as TechSol BA (a saved sign-in, or a guest the host admits), with the mic and camera off. Incoming participant video is rejected at the WebRTC SDP level (<code>a=inactive</code>) and via Meet’s audio-only receive setting so 0.5-vCPU containers spend zero CPU decoding video streams. The first chat line is the consent notice. It turns captions on, leaves one minute after it is alone, and saves before it goes. Chat DOM interactions are serialized with an async lock (<code>_ui_lock</code>) and use fast bulk text insertion (<code>fill</code> / <code>insert_text</code>). Chat posts are allowed only for consent, a reply, a task confirmation, or the saved-notes link.</p>
       </div>
       <div class="detail-block" data-detail="meet" hidden>
         <div class="detail-head"><h2>Google Meet</h2><button type="button" class="clear">Whole meeting</button></div>
@@ -312,7 +312,7 @@
       </div>
       <div class="detail-block" data-detail="agent" hidden>
         <div class="detail-head"><h2>Agent loop</h2><button type="button" class="clear">Whole meeting</button></div>
-        <p>Runs only after a wake phrase. The prompt is the persona, a short digest of this meeting, and the question. For a car question it calls search_knowledge first, then search_cars if the local hit is weak or the fact is current or specific. It calls create_task only when it has a task, an owner, and a due date; otherwise it asks one question. It calls save_meeting when asked to save. The model does not post to Meet itself.</p>
+        <p>Runs only after a wake phrase, dispatched through a non-blocking <code>asyncio.Queue</code> worker (<code>replies()</code>) so 300ms caption and chat polling never stalls during slow LLM or web-search calls. The prompt wraps untrusted context in XML delimiters (<code>&lt;meeting_digest&gt;</code>, <code>&lt;knowledge&gt;</code>, <code>&lt;web_results&gt;</code>, <code>&lt;question&gt;</code>). For a car question it calls <code>search_knowledge</code> first, then <code>search_cars</code> if the local hit is weak or the fact is current or specific. It calls <code>create_task</code> only when it has a task, an owner, and a due date; otherwise it asks one question. It calls <code>save_meeting</code> when asked to save. The model does not post to Meet itself.</p>
       </div>
       <div class="detail-block" data-detail="knowledge" hidden>
         <div class="detail-head"><h2>Knowledge base</h2><button type="button" class="clear">Whole meeting</button></div>
@@ -320,7 +320,7 @@
       </div>
       <div class="detail-block" data-detail="guard" hidden>
         <div class="detail-head"><h2>Guardrails</h2><button type="button" class="clear">Whole meeting</button></div>
-        <p>A car fact in chat must cite a knowledge-base file or a URL, or the reply says it is not sure. An uncited number is regenerated once, then replaced with a not-sure line. search_cars is refused if the query contains a caption line, the participant list, or a Notion URL. Consent and task confirmations skip this check.</p>
+        <p>A car fact in chat must cite a knowledge-base file or a URL, or the reply says it is not sure. An uncited number is regenerated once, then replaced with a not-sure line. <code>search_cars</code> is refused or scrubbed if the query contains a non-addressed caption line, the participant list, an individual participant name (excluding car brands), or a Notion/Meet URL, while excluding the addressed “Hey BA” question itself from self-collision. Untrusted prompt sections are isolated inside XML delimiters (<code>&lt;meeting_digest&gt;</code>, <code>&lt;knowledge&gt;</code>, <code>&lt;web_results&gt;</code>, <code>&lt;question&gt;</code>). Consent and task confirmations skip this check.</p>
       </div>
       <div class="detail-block" data-detail="post" hidden>
         <div class="detail-head"><h2>Chat reply</h2><button type="button" class="clear">Whole meeting</button></div>
@@ -328,7 +328,7 @@
       </div>
       <div class="detail-block" data-detail="extract" hidden>
         <div class="detail-head"><h2>Task extractor</h2><button type="button" class="clear">Whole meeting</button></div>
-        <p>Runs on recent caption lines and does not wait on a reply. The model returns JSON: task, owner, due date, and who said it. Web search is off. A question to the bot is not a task. An overheard task missing an owner or a due date is dropped, and the bot does not interrupt the meeting to ask. A complete task calls create_task directly.</p>
+        <p>Runs on recent caption lines in the background and does not wait on a reply. Queued lines are drained in batches and checked against a deterministic local task-signal pre-filter (<code>might_contain_task</code>) so casual non-task speech skips the LLM call entirely. When triggered (optionally routed to <code>llm.task_model</code>), the model returns JSON: task, owner, due date, and who said it, with web search off. A question to the bot is not a task. An overheard task missing an owner or a due date is dropped without interrupting the meeting. A complete task calls <code>create_task</code> backed by an in-memory Notion deduplication cache (<code>_task_cache</code>).</p>
       </div>
       <div class="detail-block" data-detail="confirm" hidden>
         <div class="detail-head"><h2>Confirmation</h2><button type="button" class="clear">Whole meeting</button></div>
@@ -336,11 +336,11 @@
       </div>
       <div class="detail-block" data-detail="memory" hidden>
         <div class="detail-head"><h2>Meeting memory</h2><button type="button" class="clear">Whole meeting</button></div>
-        <p>Stores caption lines, tasks, and earlier replies so a restart can continue. digest() adds participants, open tasks, and the last few minutes to the next “Hey BA” prompt, and it is capped so a long meeting still fits. Older lines stay in SQLite and go into the summary at the end. This store is not an index of past meetings.</p>
+        <p>Stores caption lines, tasks, and posted bot replies (<code>add_reply</code> / <code>recent_replies(limit=5)</code>) in SQLite with WAL mode and composite indexes so a restart can continue cleanly. <code>participants()</code> uses a direct SQL <code>GROUP BY speaker</code> query, and <code>digest()</code> adds participants, open tasks, recent bot replies, and the last few minutes of captions to the next “Hey BA” prompt, capped so a long meeting still fits. Older lines stay in SQLite and go into the summary at the end. This store is not an index of past meetings.</p>
       </div>
       <div class="detail-block" data-detail="save" hidden>
         <div class="detail-head"><h2>save_meeting</h2><button type="button" class="clear">Whole meeting</button></div>
-        <p>Triggered by “Hey BA, save the meeting”, and by the adapter when the meeting ends or someone tells the bot it can go. The summary is a short paragraph from the model, with web search off, plus the task list. The transcript sits in a collapsed toggle. Running save twice updates the same page. The empty page is created at join so the consent message can include a real link.</p>
+        <p>Triggered by “Hey BA, save the meeting”, and by the adapter when the meeting ends or someone tells the bot it can go. The empty summary page is created at join (<code>ensure_summary_page</code>) so the consent message can include a real link. When saved, properties (summary paragraph with web search off, plus the task list) are updated via <code>PATCH /pages/{id}</code>, and the collapsed transcript toggle block is appended once via <code>PATCH /blocks/{id}/children</code>. Running save twice updates the same page idempotently.</p>
       </div>
       <div class="detail-block" data-detail="openai" hidden>
         <div class="detail-head"><h2>OpenAI</h2><button type="button" class="clear">Whole meeting</button></div>
