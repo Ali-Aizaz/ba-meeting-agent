@@ -95,3 +95,122 @@ PAGE_OBSERVER_JS = r"""
   new MutationObserver(scan).observe(document.documentElement, {childList: true, subtree: true});
 })();
 """
+
+# Keep this in step with ba_agent.bot.google_meet.video.reject_incoming_video_sdp.
+REJECT_VIDEO_SDP_JS = r"""
+function __baRejectVideoSdp(sdp) {
+  if (sdp === "") return "";
+  const newline = sdp.includes("\r\n") ? "\r\n" : "\n";
+  const ended = sdp.endsWith("\n");
+  const lines = sdp.split(/\r\n|\n|\r/);
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  const out = [];
+  let inVideo = false;
+  let sawDirection = false;
+  const directions = new Set(["a=sendrecv", "a=sendonly", "a=recvonly", "a=inactive"]);
+  function finishSection() {
+    if (inVideo && !sawDirection) out.push("a=inactive");
+    sawDirection = false;
+  }
+  for (const line of lines) {
+    if (line.startsWith("m=")) {
+      finishSection();
+      inVideo = line.startsWith("m=video");
+      out.push(line);
+      continue;
+    }
+    if (inVideo && directions.has(line.trim())) {
+      if (!sawDirection) out.push("a=inactive");
+      sawDirection = true;
+      continue;
+    }
+    out.push(line);
+  }
+  finishSection();
+  let result = out.join(newline);
+  if (ended) result += newline;
+  return result;
+}
+"""
+
+REJECT_INCOMING_VIDEO_JS = (
+    REJECT_VIDEO_SDP_JS
+    + r"""
+(() => {
+  if (window.__baVideoOff) return;
+  window.__baVideoOff = true;
+  window.__baRejectVideoSdp = __baRejectVideoSdp;
+
+  function rewrite(description) {
+    if (!description || typeof description.sdp !== "string" || description.sdp.length === 0) {
+      return description;
+    }
+    const sdp = __baRejectVideoSdp(description.sdp);
+    if (sdp === description.sdp) return description;
+    return {type: description.type, sdp: sdp};
+  }
+
+  const Proto = window.RTCPeerConnection && window.RTCPeerConnection.prototype;
+  if (Proto && !Proto.__baVideoOff) {
+    Proto.__baVideoOff = true;
+    const origLocal = Proto.setLocalDescription;
+    Proto.setLocalDescription = function (description) {
+      if (description && typeof description.sdp === "string") {
+        return origLocal.call(this, rewrite(description));
+      }
+      return origLocal.apply(this, arguments);
+    };
+    const origRemote = Proto.setRemoteDescription;
+    Proto.setRemoteDescription = function (description) {
+      if (description && typeof description.sdp === "string") {
+        return origRemote.call(this, rewrite(description));
+      }
+      return origRemote.apply(this, arguments);
+    };
+    const origOffer = Proto.createOffer;
+    Proto.createOffer = function () {
+      return origOffer.apply(this, arguments).then(rewrite);
+    };
+    const origAnswer = Proto.createAnswer;
+    Proto.createAnswer = function () {
+      return origAnswer.apply(this, arguments).then(rewrite);
+    };
+  }
+
+  try {
+    const media = window.HTMLMediaElement && window.HTMLMediaElement.prototype;
+    const desc = media && Object.getOwnPropertyDescriptor(media, "srcObject");
+    if (media && desc && desc.set && desc.get && !media.__baVideoOff) {
+      let stripping = false;
+      Object.defineProperty(media, "srcObject", {
+        configurable: true,
+        enumerable: desc.enumerable,
+        get: desc.get,
+        set(value) {
+          if (stripping || !value || typeof value.getVideoTracks !== "function") {
+            desc.set.call(this, value);
+            return;
+          }
+          const videos = value.getVideoTracks();
+          if (videos.length === 0) {
+            desc.set.call(this, value);
+            return;
+          }
+          videos.forEach((track) => {
+            track.enabled = false;
+          });
+          const audio = typeof value.getAudioTracks === "function" ? value.getAudioTracks() : [];
+          stripping = true;
+          try {
+            desc.set.call(this, audio.length ? new MediaStream(audio) : null);
+          } finally {
+            stripping = false;
+          }
+        },
+      });
+      media.__baVideoOff = true;
+    }
+  } catch (err) {}
+})();
+"""
+)

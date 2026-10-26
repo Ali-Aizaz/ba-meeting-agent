@@ -98,6 +98,7 @@ class BrowserSettings(_Model):
     profile_dir: str = "data/state/browser-profile"
     rejoin_limit: int = 3
     no_sandbox: bool = True
+    receive_video: bool = False
 
 
 def package_root() -> Path:

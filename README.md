@@ -2,7 +2,7 @@
 
 TechSol BA joins a Google Meet, keeps a caption transcript (who said what, and when), answers “Hey BA” in chat, and writes a summary plus tasks to Notion.
 
-1. It joins Google Meet with the mic and camera off, posts a consent line, and turns captions on.
+1. It joins Google Meet with the mic and camera off, does not decode other people's video, posts a consent line, and turns captions on.
 2. It stores each caption with the speaker and a meeting clock such as `[01:15]`.
 3. Say or type “Hey BA …” to ask a question. Car answers come from the local notes, then from public web search when the notes are not enough.
 4. A complete overheard task (owner and due date) is saved and confirmed in chat.
@@ -73,6 +73,25 @@ MEET_URL="https://meet.google.com/abc-defg-hij" docker compose up
 
 The image is Playwright’s Python image plus Xvfb. It does not install a GPU runtime or a local model server. The browser profile and `data/state` are mounted so a restart can rejoin the same meeting. One meeting runs per process.
 
+Render uses the same image. Chromium needs the Standard plan (2 GB RAM) or larger. [render.yaml](render.yaml) is a Blueprint: web service, one instance, health check on `/status`, and a 1 GB disk at `/var/data` for the browser profile and `meeting.db`.
+
+1. Push this repo and in the Render dashboard choose **New → Blueprint**. Point it at `render.yaml`.
+2. Fill in `MEET_URL`, `BA_LLM__API_KEY`, `BA_NOTION__TOKEN`, `BA_NOTION__DATABASES__SUMMARY`, and `BA_NOTION__DATABASES__TASKS` when Render asks. Change `BA_LLM__MODEL` if the key is not for `gpt-5.5`.
+3. After the deploy, open `/status` on the service URL. The host still has to admit **TechSol BA**. Render sets join mode to `guest` because the instance has no display for a Google sign-in.
+
+Change `MEET_URL` and redeploy to join a different meeting. The first image build is large. If the process is killed with no Python traceback, move the plan to Pro (4 GB). Google sometimes blocks data-center browsers; the logs then show `Not admitted` or `Join button not found`.
+
+Cloudflare Containers runs this same image on the Workers Paid plan. Chromium needs about 2 GB of RAM, so the instance is `standard-1` (4 GiB memory, half a vCPU, 8 GB disk). [wrangler.jsonc](wrangler.jsonc) sets one instance. Included memory is 25 GiB-hours, about 6 hours on that size. The container sleeps after 3 hours without an incoming HTTP request, which covers one rehearsal and stays inside that allowance. A request resets the timer. Outbound Meet traffic does not, so there is no uptime monitor. Disk is ephemeral: after a sleep or a new deploy the browser profile and `meeting.db` are gone, so join mode is `guest`, the same choice as Render.
+
+1. Confirm the account is Workers Paid.
+2. `npm install`, then `npx wrangler login`.
+3. `npx wrangler secret put` for `MEET_URL`, `BA_LLM__API_KEY`, `BA_NOTION__TOKEN`, `BA_NOTION__DATABASES__SUMMARY`, and `BA_NOTION__DATABASES__TASKS`.
+4. `npx wrangler deploy`. The first build is large. The image has to stay under the 8 GB disk.
+5. Open `/status` on the workers.dev URL. The host still has to admit **TechSol BA**.
+6. Changing `MEET_URL` applies on the next container start. Deploy before the meeting. A deploy during a call sends SIGTERM and the bot leaves.
+7. After the meeting, let the 3 hour timer fire. Hitting `/status` keeps the instance billed.
+8. Google often blocks data-center browsers. Logs then show `Not admitted` or `Join button not found`. Do not add a proxy.
+
 ## How to talk to it
 
 Say or type “Hey BA” near the start of the line. `hey bea`, `hi ba`, `ok ba`, and a chat `@ba` count. “Hey BA” on its own gets one question back: “Yes — what would you like me to do?”
@@ -85,7 +104,7 @@ Car questions cite a knowledge file, for example `(src: hybrid.md)`, or a URL fr
 
 ## Tech choices
 
-Google Meet is driven by Playwright in a headed browser (Xvfb on a server). There is no hosted meeting bot. The transcript is Meet’s own captions, not a second speech-to-text API. Replies use the OpenAI Responses API. Web search is the `web_search` tool, and that request body is only the car question plus one line telling the model to cite URLs. The meeting digest can go to the model for a reply, a task list, or the summary. It does not go into `search_cars`. The knowledge base is the Markdown files in `data/knowledge/`. Notion is called over HTTP. Property names live in `config/notion_schema.yaml`.
+Google Meet is driven by Playwright in a headed browser (Xvfb on a server). There is no hosted meeting bot. Incoming video is negotiated inactive, and Meet’s receive resolution is set to audio only when that control is on the page. Audio and captions stay on. `BA_BROWSER__RECEIVE_VIDEO=true` receives cameras again. The transcript is Meet’s own captions, not a second speech-to-text API. Replies use the OpenAI Responses API. Web search is the `web_search` tool, and that request body is only the car question plus one line telling the model to cite URLs. The meeting digest can go to the model for a reply, a task list, or the summary. It does not go into `search_cars`. The knowledge base is the Markdown files in `data/knowledge/`. Notion is called over HTTP. Property names live in `config/notion_schema.yaml`.
 
 ## Limits
 
@@ -93,4 +112,4 @@ Captions are English-biased, and Google can change the Meet DOM. Guest join stil
 
 ## AI coding assistants
 
-Cursor (Grok 4.7) drafted the package, tests, Docker setup, this README, and the diagram from `docs/tasks/`. Adnan reviews that output before submission. The assistant did not join a live meeting. Details are in [AI_USAGE.md](AI_USAGE.md).
+Cursor (Grok 4.7) drafted the package, tests, Docker and Cloudflare setup, this README, and the diagram from `docs/tasks/`. Adnan reviews that output before submission. The assistant did not join a live meeting. Details are in [AI_USAGE.md](AI_USAGE.md).

@@ -9,6 +9,7 @@ import pytest
 from tests.conftest import FIXTURES, clear_secrets
 
 from ba_agent.bot.chat_parse import parse_chat_html
+from ba_agent.bot.google_meet.video import reject_incoming_video_sdp
 from ba_agent.bot.output_gate import OutputGate
 from ba_agent.captions.clock import format_meeting_time
 from ba_agent.captions.pump import CaptionPump
@@ -130,6 +131,15 @@ async def test_t02_i1_fake_meet(fake_meet_url: str, tmp_path: Path, monkeypatch)
         await adapter.page.wait_for_timeout(200)
         posted = await adapter.collect_chat()
         assert any(m.text == "Reply line" and m.is_self for m in posted)
+        assert await adapter.page.evaluate("() => window.__baVideoOff === true")
+        sample = (
+            "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n"
+            "a=sendrecv\r\n"
+            "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
+            "a=recvonly\r\n"
+        )
+        rewritten = await adapter.page.evaluate("(sdp) => window.__baRejectVideoSdp(sdp)", sample)
+        assert rewritten == reject_incoming_video_sdp(sample)
         assert await adapter.enable_captions() is True
     finally:
         await adapter.close()

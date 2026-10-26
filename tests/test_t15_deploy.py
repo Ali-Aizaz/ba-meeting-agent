@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
+import signal
+import subprocess
 from pathlib import Path
+from typing import cast
 
+import httpx
 import pytest
 from tests.conftest import clear_secrets
 
-from ba_agent.config import StartupError, load_settings, start_join
+from ba_agent.__main__ import _run_until_stopped
+from ba_agent.config import Settings, StartupError, load_settings, start_join
+from ba_agent.session import _let_cleanup_finish
+from ba_agent.status import StatusState, start_status_server
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -30,3 +39,131 @@ def test_t15_u1_compose_has_no_gpu_runtime() -> None:
     assert "nvidia" not in text
     assert "cuda" not in text
     assert "ollama" not in text
+
+
+def test_t15_render_blueprint_is_a_docker_service_without_secrets() -> None:
+    text = (ROOT / "render.yaml").read_text(encoding="utf-8")
+    lowered = text.lower()
+    assert "runtime: docker" in lowered
+    assert "healthcheckpath: /status" in lowered
+    assert "mountpath: /var/data" in lowered
+    assert "nvidia" not in lowered
+    assert "sk-" not in lowered
+    assert "ntn_" not in lowered
+    entry = (ROOT / "scripts" / "docker-entrypoint.sh").read_text(encoding="utf-8")
+    assert "MEET_URL" in entry
+    assert "BA_SERVER__STATUS_PORT" in entry
+
+
+def test_t15_status_responds_on_root_and_status() -> None:
+    state = StatusState("m1")
+    state.captions_enabled = True
+    server = start_status_server(state, "127.0.0.1", 0)
+    assert server is not None
+    port = server.server_address[1]
+    try:
+        for path in ("/", "/status"):
+            response = httpx.get(f"http://127.0.0.1:{port}{path}", timeout=2)
+            assert response.status_code == 200
+            assert response.json()["meeting_id"] == "m1"
+            assert response.json()["captions_enabled"] is True
+        missing = httpx.get(f"http://127.0.0.1:{port}/nope", timeout=2)
+        assert missing.status_code == 404
+    finally:
+        server.shutdown()
+
+
+def test_t15_cloudflare_container_is_standard_1_without_secrets() -> None:
+    text = (ROOT / "wrangler.jsonc").read_text(encoding="utf-8")
+    assert '"instance_type": "standard-1"' in text
+    assert '"max_instances": 1' in text
+    assert '"class_name": "BaContainer"' in text
+    lowered = text.lower()
+    for marker in (
+        "sk-",
+        "ntn_",
+        "meet.google.com",
+        "api_key",
+        "ba_llm__api_key",
+        "ba_notion__token",
+    ):
+        assert marker not in lowered
+
+
+def test_t15_worker_sleeps_after_three_hours_and_reads_secrets_from_env() -> None:
+    text = (ROOT / "cloudflare" / "src" / "index.ts").read_text(encoding="utf-8")
+    assert 'sleepAfter = "3h"' in text
+    assert 'idFromName("meeting")' in text
+    assert "portReadyTimeoutMS" in text
+    assert "enableInternet = true" in text
+    for name in (
+        "MEET_URL",
+        "BA_LLM__API_KEY",
+        "BA_NOTION__TOKEN",
+        "BA_NOTION__DATABASES__SUMMARY",
+        "BA_NOTION__DATABASES__TASKS",
+    ):
+        assert name in text
+    assert "sk-" not in text.lower()
+    assert "ntn_" not in text
+    assert "meet.google.com" not in text
+
+
+def test_t15_entrypoint_forwards_stop_signals_to_python() -> None:
+    entry = ROOT / "scripts" / "docker-entrypoint.sh"
+    text = entry.read_text(encoding="utf-8")
+    assert "exec xvfb-run" not in text
+    assert "xvfb-run -a python -m ba_agent" in text
+    assert "forward_signal TERM" in text
+    assert "forward_signal INT" in text
+    assert "MEET_URL" in text
+    subprocess.run(["sh", "-n", str(entry)], check=True)
+
+
+async def test_t15_sigterm_cancels_join_and_cleanup_still_awaits(monkeypatch) -> None:
+    started = asyncio.Event()
+    cleaned = asyncio.Event()
+
+    async def fake_join(settings, url: str) -> None:
+        del settings, url
+        started.set()
+        try:
+            await asyncio.sleep(30)
+        finally:
+            _let_cleanup_finish()
+            await asyncio.sleep(0)
+            cleaned.set()
+
+    monkeypatch.setattr("ba_agent.__main__.run_join", fake_join)
+    task = asyncio.create_task(
+        _run_until_stopped(cast(Settings, object()), "https://meet.google.com/abc-defg-hij")
+    )
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2)
+        os.kill(os.getpid(), signal.SIGTERM)
+        await asyncio.wait_for(task, timeout=2)
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    assert cleaned.is_set()
+
+
+async def test_t15_cleanup_awaits_after_the_join_task_is_cancelled() -> None:
+    ran = False
+
+    async def body() -> None:
+        nonlocal ran
+        try:
+            await asyncio.sleep(30)
+        finally:
+            _let_cleanup_finish()
+            await asyncio.sleep(0)
+            ran = True
+
+    task = asyncio.create_task(body())
+    await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert ran

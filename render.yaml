@@ -1,0 +1,38 @@
+# Render Blueprint. Chromium needs 2 GB RAM, so the plan is Standard.
+# Free and Starter (512 MB) run out of memory, and they cannot attach this disk.
+services:
+  - type: web
+    name: ba-meeting-agent
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: standard
+    numInstances: 1
+    healthCheckPath: /status
+    envVars:
+      - key: MEET_URL
+        sync: false
+      - key: BA_LLM__API_KEY
+        sync: false
+      - key: BA_LLM__MODEL
+        value: gpt-5.5
+      - key: BA_NOTION__TOKEN
+        sync: false
+      - key: BA_NOTION__DATABASES__SUMMARY
+        sync: false
+      - key: BA_NOTION__DATABASES__TASKS
+        sync: false
+      - key: BA_MEETING__JOIN_MODE
+        value: guest
+      - key: BA_BROWSER__HEADLESS
+        value: "false"
+      - key: BA_BROWSER__RECEIVE_VIDEO
+        value: "false"
+      - key: BA_BROWSER__PROFILE_DIR
+        value: /var/data/browser-profile
+      - key: BA_STORAGE__SQLITE_PATH
+        value: /var/data/meeting.db
+    disk:
+      name: ba-state
+      mountPath: /var/data
+      sizeGB: 1

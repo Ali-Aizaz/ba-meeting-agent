@@ -34,6 +34,15 @@ from ba_agent.trigger.detector import TriggerDetector
 logger = logging.getLogger("ba_agent.session")
 
 
+def _let_cleanup_finish() -> None:
+    """Drop a SIGTERM cancel so the awaits that save notes and leave Meet still run."""
+    task = asyncio.current_task()
+    if task is None:
+        return
+    while task.cancelling():
+        task.uncancel()
+
+
 class SessionPoster:
     def __init__(self, adapter: GoogleMeetAdapter, gate: OutputGate) -> None:
         self.adapter = adapter
@@ -149,6 +158,7 @@ async def run_join(settings: Settings, url: str) -> None:
                 if attempts >= settings.browser.rejoin_limit:
                     raise
     finally:
+        _let_cleanup_finish()
         try:
             if store.get_meta("save_announced") != "1":
                 await _save(settings, store, notion, llm, announce=True, poster=poster)
@@ -228,11 +238,14 @@ async def _loops(settings, adapter, pump, store, aliases, trigger, agent, extrac
         asyncio.create_task(alone()),
         asyncio.create_task(extractor.run()),
     ]
-    await adapter.ended_event.wait()
-    extractor.stop()
-    for task in tasks:
-        task.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
+    try:
+        await adapter.ended_event.wait()
+    finally:
+        _let_cleanup_finish()
+        extractor.stop()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def _save(settings, store, notion, llm, *, announce: bool, poster: SessionPoster) -> str:

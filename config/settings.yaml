@@ -46,3 +46,4 @@ browser:
   profile_dir: data/state/browser-profile
   rejoin_limit: 3
   no_sandbox: true
+  receive_video: false

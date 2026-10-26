@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import signal
 import sys
 
 import httpx
 
-from ba_agent.config import load_settings, start_join
+from ba_agent.config import Settings, load_settings, start_join
 from ba_agent.session import run_join
 
 
@@ -28,9 +29,43 @@ def main(argv: list[str] | None = None) -> None:
         settings.browser.headless = True
     start_join(settings, args.url, launch_browser=lambda: None)
     try:
-        asyncio.run(run_join(settings, args.url))
+        asyncio.run(_run_until_stopped(settings, args.url))
     except KeyboardInterrupt:
         sys.exit(130)
+
+
+async def _run_until_stopped(settings: Settings, url: str) -> None:
+    """Cancel the join task on SIGTERM or SIGINT so run_join's finally can finish."""
+    loop = asyncio.get_running_loop()
+    task: asyncio.Task[None] | None = None
+    caught: list[signal.Signals] = []
+
+    def stop(signum: signal.Signals) -> None:
+        caught.append(signum)
+        if task is not None and not task.done():
+            task.cancel()
+
+    installed: list[signal.Signals] = []
+    try:
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, stop, sig)
+            installed.append(sig)
+    except NotImplementedError:
+        for sig in installed:
+            loop.remove_signal_handler(sig)
+        await run_join(settings, url)
+        return
+
+    task = asyncio.create_task(run_join(settings, url))
+    try:
+        await task
+    except asyncio.CancelledError:
+        if signal.SIGINT in caught:
+            raise KeyboardInterrupt
+        return
+    finally:
+        for sig in installed:
+            loop.remove_signal_handler(sig)
 
 
 def _print_status(settings) -> None:

@@ -1,0 +1,31 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "ba-meeting-agent",
+  "main": "cloudflare/src/index.ts",
+  "compatibility_date": "2026-10-26",
+  "tsconfig": "tsconfig.json",
+  "containers": [
+    {
+      "class_name": "BaContainer",
+      // One image and one size for every instance. standard-1 is 4 GiB memory.
+      "scheduling_policy": "default",
+      "image": "./Dockerfile",
+      "instance_type": "standard-1",
+      "max_instances": 1
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "BA_CONTAINER",
+        "class_name": "BaContainer"
+      }
+    ]
+  },
+  "exports": {
+    "BaContainer": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  }
+}

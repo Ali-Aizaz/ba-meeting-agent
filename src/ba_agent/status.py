@@ -24,7 +24,8 @@ class StatusState:
 def start_status_server(state: StatusState, host: str, port: int) -> ThreadingHTTPServer | None:
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
-            if self.path.split("?", 1)[0] != "/status":
+            # "/" is the Render health check and the public service URL.
+            if self.path.split("?", 1)[0] not in {"/", "/status"}:
                 self.send_response(404)
                 self.end_headers()
                 return

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from pathlib import Path
 
 from ba_agent.bot.chat_parse import ChatReader
-from ba_agent.bot.google_meet.scripts import PAGE_OBSERVER_JS
+from ba_agent.bot.google_meet.scripts import PAGE_OBSERVER_JS, REJECT_INCOMING_VIDEO_JS
 from ba_agent.bot.google_meet.selectors import (
+    AUDIO_ONLY,
     CAM_ON_ACTION,
     CAPTION_REGION,
     CHAT_BOX,
@@ -19,11 +21,15 @@ from ba_agent.bot.google_meet.selectors import (
     LEAVE_CALL,
     MIC_OFF_STATE,
     MIC_ON_ACTION,
+    MORE_OPTIONS,
     NAME_LABEL,
     PARTICIPANT,
     PARTICIPANT_SELF,
+    RECEIVE_RESOLUTION,
+    SETTINGS_ITEM,
     TURN_OFF_CAPTIONS,
     TURN_ON_CAPTIONS,
+    VIDEO_TAB,
 )
 from ba_agent.captions.stabilize import CaptionRow
 from ba_agent.config import Settings, resolve_path
@@ -83,11 +89,13 @@ class GoogleMeetAdapter:
             args=args,
             viewport={"width": 1280, "height": 720},
         )
+        if not self.settings.browser.receive_video:
+            await self._context.add_init_script(REJECT_INCOMING_VIDEO_JS)
+        await self._context.add_init_script(PAGE_OBSERVER_JS)
         if self._context.pages:
             self.page = self._context.pages[0]
         else:
             self.page = await self._context.new_page()
-        await self.page.add_init_script(PAGE_OBSERVER_JS)
         await self.page.goto(url, wait_until="domcontentloaded")
         await self._mute()
         await self._fill_name()
@@ -100,6 +108,8 @@ class GoogleMeetAdapter:
             )
         self._admitted_at = time.monotonic()
         logger.info("admitted as %s", self.settings.meeting.bot_name)
+        if not self.settings.browser.receive_video:
+            await self._stop_incoming_video()
 
     async def leave(self) -> None:
         if self._left:
@@ -233,6 +243,44 @@ class GoogleMeetAdapter:
             for message in await self.collect_chat():
                 yield message
             await asyncio.sleep(0.3)
+
+    async def _stop_incoming_video(self) -> None:
+        """Ask Meet for audio only. The page script already marks video inactive."""
+        if self.page is None:
+            return
+        more = self.page.get_by_role("button", name=MORE_OPTIONS, exact=True)
+        if await more.count() == 0:
+            logger.info("incoming_video: inactive")
+            return
+        try:
+            await more.first.click(timeout=1000)
+            item = self.page.get_by_role("menuitem", name=SETTINGS_ITEM, exact=True)
+            if await item.count() == 0:
+                raise RuntimeError("settings item missing")
+            await item.first.click(timeout=1000)
+            tab = self.page.get_by_role("tab", name=VIDEO_TAB, exact=True)
+            if await tab.count() == 0:
+                tab = self.page.get_by_role("button", name=VIDEO_TAB, exact=True)
+            await tab.first.click(timeout=1000)
+            box = self.page.get_by_role("combobox", name=re.compile(RECEIVE_RESOLUTION, re.I))
+            if await box.count() == 0:
+                box = self.page.get_by_role("button", name=re.compile(RECEIVE_RESOLUTION, re.I))
+            await box.first.click(timeout=1000)
+            option = self.page.get_by_role("option", name=re.compile(rf"^{AUDIO_ONLY}$", re.I))
+            await option.first.click(timeout=1000)
+            logger.info("incoming_video: audio-only")
+        except Exception:
+            logger.info("incoming_video: inactive")
+        await self._close_meet_menus()
+
+    async def _close_meet_menus(self) -> None:
+        if self.page is None:
+            return
+        for _ in range(2):
+            try:
+                await self.page.keyboard.press("Escape")
+            except Exception:
+                return
 
     async def _mute(self) -> None:
         for label in (MIC_ON_ACTION, CAM_ON_ACTION):
