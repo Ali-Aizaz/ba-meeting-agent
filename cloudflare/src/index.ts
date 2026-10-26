@@ -5,6 +5,7 @@ declare global {
   interface Env {
     MEET_URL?: string;
     BA_LLM__API_KEY?: string;
+    BA_LLM__MODEL?: string;
     BA_NOTION__TOKEN?: string;
     BA_NOTION__DATABASES__SUMMARY?: string;
     BA_NOTION__DATABASES__TASKS?: string;
@@ -14,6 +15,7 @@ declare global {
 const SECRET_KEYS = [
   "MEET_URL",
   "BA_LLM__API_KEY",
+  "BA_LLM__MODEL",
   "BA_NOTION__TOKEN",
   "BA_NOTION__DATABASES__SUMMARY",
   "BA_NOTION__DATABASES__TASKS",
@@ -21,6 +23,7 @@ const SECRET_KEYS = [
 
 // The status server listens before Chromium starts. Half a vCPU can still
 // spend longer than the 20s default on the first process boot.
+const INSTANCE_GET_TIMEOUT_MS = 30_000;
 const PORT_READY_TIMEOUT_MS = 120_000;
 
 const CONTAINER_ENV: Record<string, string> = {
@@ -45,6 +48,7 @@ export class BaContainer extends Container<Env> {
     try {
       await this.startAndWaitForPorts({
         cancellationOptions: {
+          instanceGetTimeoutMS: INSTANCE_GET_TIMEOUT_MS,
           portReadyTimeoutMS: PORT_READY_TIMEOUT_MS,
           abort: request.signal,
         },

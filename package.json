@@ -2,7 +2,9 @@
   "name": "ba-meeting-agent",
   "private": true,
   "scripts": {
-    "deploy": "wrangler deploy",
+    "deploy": "./scripts/deploy-cloudflare.sh",
+    "deploy:secrets": "./scripts/deploy-cloudflare.sh --secrets-only",
+    "meet-url": "./scripts/set-meet-url.sh",
     "cf-typegen": "wrangler types --include-runtime false --env-file /dev/null"
   },
   "dependencies": {
@@ -11,6 +13,6 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261026.1",
     "typescript": "^7.0.2",
-    "wrangler": "^4.45.0"
+    "wrangler": "^4.35.0"
   }
 }

@@ -85,10 +85,22 @@ Cloudflare Containers runs this same image on the Workers Paid plan. Chromium ne
 
 1. Confirm the account is Workers Paid.
 2. `npm install`, then `npx wrangler login`.
-3. `npx wrangler secret put` for `MEET_URL`, `BA_LLM__API_KEY`, `BA_NOTION__TOKEN`, `BA_NOTION__DATABASES__SUMMARY`, and `BA_NOTION__DATABASES__TASKS`.
-4. `npx wrangler deploy`. The first build is large. The image has to stay under the 8 GB disk.
+3. Put `BA_LLM__API_KEY`, `BA_NOTION__TOKEN`, `BA_NOTION__DATABASES__SUMMARY`, and `BA_NOTION__DATABASES__TASKS` in `.env`.
+4. Deploy (syncs those secrets plus `MEET_URL`, then builds the container):
+
+```bash
+npm run deploy -- --meet-url "https://meet.google.com/abc-defg-hij"
+```
+
+   Or set `MEET_URL` in `.env` / the shell and run `npm run deploy`. Secrets only: `npm run deploy:secrets -- --meet-url "…"`. First build is large; the image has to stay under the 8 GB disk.
 5. Open `/status` on the workers.dev URL. The host still has to admit **TechSol BA**.
-6. Changing `MEET_URL` applies on the next container start. Deploy before the meeting. A deploy during a call sends SIGTERM and the bot leaves.
+6. To point at a different meeting later (updates `.env` and the Worker secret):
+
+```bash
+npm run meet-url -- "https://meet.google.com/abc-defg-hij"
+```
+
+   Local `.env` only: `npm run meet-url -- --local "…"`. The new URL applies on the next container start. Deploy before the meeting. A deploy during a call sends SIGTERM and the bot leaves.
 7. After the meeting, let the 3 hour timer fire. Hitting `/status` keeps the instance billed.
 8. Google often blocks data-center browsers. Logs then show `Not admitted` or `Join button not found`. Do not add a proxy.
 

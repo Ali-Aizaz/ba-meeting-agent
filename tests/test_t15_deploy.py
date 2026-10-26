@@ -120,6 +120,22 @@ def test_t15_entrypoint_forwards_stop_signals_to_python() -> None:
     subprocess.run(["sh", "-n", str(entry)], check=True)
 
 
+def test_t15_cloudflare_deploy_scripts_have_valid_syntax_and_safe_order() -> None:
+    deploy_script = ROOT / "scripts" / "deploy-cloudflare.sh"
+    set_meet_script = ROOT / "scripts" / "set-meet-url.sh"
+    subprocess.run(["bash", "-n", str(deploy_script)], check=True)
+    subprocess.run(["bash", "-n", str(set_meet_script)], check=True)
+    text = deploy_script.read_text(encoding="utf-8")
+    assert "CALLER_MEET_URL" in text
+    assert "npx wrangler deploy" in text
+    assert 'npx wrangler secret bulk "$tmp"' in text
+    # Full deploy must run `npx wrangler deploy` before `npx wrangler secret bulk`
+    # so the first deploy to a fresh Cloudflare account creates the Worker first.
+    deploy_idx = text.index("npx wrangler deploy")
+    bulk_after_deploy_idx = text.rindex('npx wrangler secret bulk "$tmp"')
+    assert deploy_idx < bulk_after_deploy_idx
+
+
 async def test_t15_sigterm_cancels_join_and_cleanup_still_awaits(monkeypatch) -> None:
     started = asyncio.Event()
     cleaned = asyncio.Event()
