@@ -157,6 +157,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="BA_",
         env_nested_delimiter="__",
+        env_file=".env",
+        env_file_encoding="utf-8",
         env_ignore_empty=True,
         extra="ignore",
     )
@@ -182,12 +184,14 @@ class Settings(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
-        return (
+        sources: list[PydanticBaseSettingsSource] = [
             init_settings,
             env_settings,
-            _YamlSource(settings_cls),
-            file_secret_settings,
-        )
+        ]
+        if "PYTEST_CURRENT_TEST" not in os.environ:
+            sources.append(dotenv_settings)
+        sources.extend((_YamlSource(settings_cls), file_secret_settings))
+        return tuple(sources)
 
     def __repr__(self) -> str:
         data = self.model_dump(mode="python")
