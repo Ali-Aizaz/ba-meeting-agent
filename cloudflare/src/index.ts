@@ -5,6 +5,9 @@ declare global {
   interface Env {
     MEET_URL?: string;
     BA_WEBHOOK_SECRET?: string;
+    BA_MEETING__GOOGLE_EMAIL?: string;
+    BA_MEETING__GOOGLE_PASSWORD?: string;
+    BA_MEETING__GOOGLE_COOKIES_B64?: string;
     BA_LLM__API_KEY?: string;
     BA_LLM__MODEL?: string;
     BA_NOTION__TOKEN?: string;
@@ -15,6 +18,9 @@ declare global {
 
 const SECRET_KEYS = [
   "MEET_URL",
+  "BA_MEETING__GOOGLE_EMAIL",
+  "BA_MEETING__GOOGLE_PASSWORD",
+  "BA_MEETING__GOOGLE_COOKIES_B64",
   "BA_LLM__API_KEY",
   "BA_LLM__MODEL",
   "BA_NOTION__TOKEN",
@@ -41,8 +47,9 @@ const CORS_HEADERS: Record<string, string> = {
 const CONTAINER_ENV: Record<string, string> = {
   BA_SERVER__STATUS_HOST: "0.0.0.0",
   BA_SERVER__STATUS_PORT: "8080",
-  BA_MEETING__JOIN_MODE: "guest",
+  BA_MEETING__JOIN_MODE: "signed_in",
   BA_BROWSER__HEADLESS: "false",
+  BA_BROWSER__KEEP_ALIVE: "true",
   BA_BROWSER__RECEIVE_VIDEO: "false",
   BA_LLM__MODEL: "gpt-5.5",
 };
@@ -232,13 +239,35 @@ export class BaContainer extends Container<Env> {
       (state.status === "running" || state.status === "healthy");
     const switchedMeeting = Boolean(previousUrl && previousUrl !== normalizedUrl && isRunning);
 
-    if (switchedMeeting) {
-      await this.stopForNextMeeting();
-    }
-
     await this.ctx.storage.put(STORAGE_MEET_URL_KEY, normalizedUrl);
     const nextEnv = containerEnv(this.env, normalizedUrl);
     this.envVars = nextEnv;
+
+    if (isRunning) {
+      try {
+        const joinRes = await super.fetch(
+          new Request("http://localhost/join", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ url: normalizedUrl }),
+          }),
+        );
+        if (joinRes.ok) {
+          const payload = (await joinRes.json()) as Record<string, unknown>;
+          return jsonResponse({
+            ...payload,
+            ok: true,
+            meet_url: normalizedUrl,
+            switched: switchedMeeting,
+          });
+        }
+      } catch {
+        // Fall back to container restart below if the running container port did not respond.
+      }
+      if (switchedMeeting) {
+        await this.stopForNextMeeting();
+      }
+    }
 
     try {
       // Do not bind request.signal here so a tab refresh never aborts container boot.

@@ -56,7 +56,8 @@ def test_t15_render_blueprint_is_a_docker_service_without_secrets() -> None:
 
 
 def test_t15_status_responds_on_root_and_status() -> None:
-    state = StatusState("m1")
+    joined_urls: list[str] = []
+    state = StatusState("m1", on_join=joined_urls.append)
     state.captions_enabled = True
     server = start_status_server(state, "127.0.0.1", 0)
     assert server is not None
@@ -67,6 +68,20 @@ def test_t15_status_responds_on_root_and_status() -> None:
             assert response.status_code == 200
             assert response.json()["meeting_id"] == "m1"
             assert response.json()["captions_enabled"] is True
+        join_res = httpx.post(
+            f"http://127.0.0.1:{port}/join",
+            json={"url": "https://meet.google.com/abc-defg-hij"},
+            timeout=2,
+        )
+        assert join_res.status_code == 200
+        assert join_res.json()["ok"] is True
+        assert joined_urls == ["https://meet.google.com/abc-defg-hij"]
+        bad_join = httpx.post(
+            f"http://127.0.0.1:{port}/join",
+            json={"url": "https://evil.example.com/abc"},
+            timeout=2,
+        )
+        assert bad_join.status_code == 400
         missing = httpx.get(f"http://127.0.0.1:{port}/nope", timeout=2)
         assert missing.status_code == 404
     finally:

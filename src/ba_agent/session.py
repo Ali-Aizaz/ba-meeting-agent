@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 
@@ -75,12 +76,70 @@ class SessionPoster:
 async def run_join(settings: Settings, url: str) -> None:
     configure_logging()
     ensure_ready(settings)
+    loop = asyncio.get_running_loop()
+    next_url_event = asyncio.Event()
+    queued_url: list[str] = []
+    current_url = url
+    adapter = GoogleMeetAdapter(settings)
+
+    def on_join_request(new_url: str) -> None:
+        def _schedule() -> None:
+            queued_url.clear()
+            queued_url.append(new_url)
+            next_url_event.set()
+            if new_url != current_url or adapter._admitted_at is None:
+                adapter.ended_event.set()
+
+        loop.call_soon_threadsafe(_schedule)
+
+    status = StatusState("", on_join=on_join_request)
+    server = start_status_server(status, settings.server.status_host, settings.server.status_port)
+    keep_alive = bool(settings.browser.keep_alive) and "PYTEST_CURRENT_TEST" not in os.environ
+    try:
+        while True:
+            next_url_event.clear()
+            adapter.ended_event = asyncio.Event()
+            adapter._left = False
+            adapter._admitted_at = None
+            try:
+                await _run_single_meeting(settings, adapter, status, current_url)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                if not keep_alive:
+                    raise
+                logger.exception(
+                    "meeting session for %s ended with error; browser stays alive",
+                    current_url,
+                )
+            if not keep_alive:
+                break
+            status.captions_enabled = False
+            status.chat_enabled = False
+            if not queued_url:
+                logger.info("browser kept alive and signed in; waiting for next meeting on /join")
+                await next_url_event.wait()
+            if queued_url:
+                current_url = queued_url.pop(0)
+    finally:
+        _let_cleanup_finish()
+        await adapter.close(force=True)
+        if server is not None:
+            server.shutdown()
+
+
+async def _run_single_meeting(
+    settings: Settings,
+    adapter: GoogleMeetAdapter,
+    status: StatusState,
+    url: str,
+) -> None:
     store = open_meeting(resolve_path(settings.storage.sqlite_path), url)
     set_meeting_id(store.meeting_id)
-    status = StatusState(store.meeting_id)
-    server = start_status_server(status, settings.server.status_host, settings.server.status_port)
+    status.meeting_id = store.meeting_id
+    status.captions_enabled = False
+    status.chat_enabled = False
     notion = _build_notion(settings, store)
-    adapter = GoogleMeetAdapter(settings)
     poster = SessionPoster(adapter, OutputGate(), store)
     llm = None
     joined = False
@@ -197,7 +256,7 @@ async def run_join(settings: Settings, url: str) -> None:
                 break
             except Exception:
                 logger.exception("meeting attempt %s failed", attempts)
-                await adapter.close()
+                await adapter.close(force=False)
                 adapter.ended_event = asyncio.Event()
                 if attempts >= settings.browser.rejoin_limit:
                     raise
@@ -220,8 +279,6 @@ async def run_join(settings: Settings, url: str) -> None:
         if notion is not None:
             await notion.aclose()
         store.close()
-        if server is not None:
-            server.shutdown()
 
 
 async def _loops(

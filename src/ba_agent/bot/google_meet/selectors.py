@@ -6,7 +6,18 @@ TURN_OFF_CAPTIONS = "Turn off captions"
 CHAT_BOX = "Send a message to everyone"
 CHAT_BUTTON = "Chat with everyone"
 LEAVE_CALL = "Leave call"
-JOIN_BUTTONS = ("Join now", "Ask to join")
+JOIN_BUTTONS = ("Join now", "Ask to join", "Switch here")
+DISMISS_BUTTONS = ("Continue without microphone and camera", "Not now", "Dismiss", "Got it")
+LOBBY_TEXTS = (
+    "Please wait until a meeting host brings you into the call",
+    "Asking to be let in",
+    "Wait until a meeting host brings you into the call",
+)
+REJECTED_TEXTS = (
+    "You can't join this video call",
+    "Someone in the call denied your request to join",
+    "You've been denied entry",
+)
 MIC_ON_ACTION = "Turn off microphone"
 CAM_ON_ACTION = "Turn off camera"
 MIC_OFF_STATE = "Turn on microphone"

@@ -48,3 +48,4 @@ browser:
   rejoin_limit: 3
   no_sandbox: true
   receive_video: false
+  keep_alive: true

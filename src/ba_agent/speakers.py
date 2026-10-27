@@ -23,7 +23,12 @@ def normalize_speaker(raw: str | None, aliases: dict[str, str] | None = None) ->
 
 
 def is_bot_speaker(name: str, bot_name: str = "TechSol BA") -> bool:
-    return name.strip().lower() in {bot_name.strip().lower(), "you"}
+    return name.strip().lower() in {
+        bot_name.strip().lower(),
+        "techsol ba",
+        "ba assistant",
+        "you",
+    }
 
 
 def load_aliases(path: Path) -> dict[str, str]:

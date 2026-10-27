@@ -74,11 +74,17 @@ def test_t01_u4_repr_hides_secrets(monkeypatch) -> None:
     settings = load_settings()
     settings.llm.api_key = SecretStr("super-secret-token-xyz")
     settings.notion.token = SecretStr("notion-secret-abc")
+    settings.meeting.google_password = SecretStr("google-secret-pwd")
+    settings.meeting.google_cookies_b64 = SecretStr("google-secret-cookies")
     text = repr(settings)
     assert "super-secret-token-xyz" not in text
     assert "notion-secret-abc" not in text
+    assert "google-secret-pwd" not in text
+    assert "google-secret-cookies" not in text
     assert "super-secret-token-xyz" not in str(settings)
     assert "notion-secret-abc" not in str(settings)
+    assert "google-secret-pwd" not in str(settings)
+    assert "google-secret-cookies" not in str(settings)
 
 
 def test_t01_validate_meet_url_blocks_ssrf() -> None:

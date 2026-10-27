@@ -90,7 +90,7 @@ def messages_from_nodes(
     last_sender: str = "",
 ) -> list[ChatMessage]:
     now = wall_time or datetime.now(UTC)
-    self_names = {"you", bot_name.strip().lower()}
+    self_names = {"you", bot_name.strip().lower(), "techsol ba", "ba assistant"}
     messages: list[ChatMessage] = []
     for node in nodes:
         sender = (node.get("sender") or "").strip() or last_sender

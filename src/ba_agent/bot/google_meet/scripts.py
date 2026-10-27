@@ -158,12 +158,19 @@ PAGE_OBSERVER_JS = r"""
     return queued;
   };
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", scan);
-  } else {
+  function startRootObserver() {
     scan();
+    const root = document.documentElement || document.body;
+    if (root && root.nodeType === 1) {
+      new MutationObserver(scan).observe(root, {childList: true, subtree: true});
+    }
   }
-  new MutationObserver(scan).observe(document.documentElement, {childList: true, subtree: true});
+
+  if (document.readyState === "loading" || !document.documentElement) {
+    document.addEventListener("DOMContentLoaded", startRootObserver, {once: true});
+  } else {
+    startRootObserver();
+  }
 })();
 """
 

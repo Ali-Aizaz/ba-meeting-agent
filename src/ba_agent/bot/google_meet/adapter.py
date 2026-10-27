@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import logging
+import os
 import re
 import time
+import zlib
 from pathlib import Path
+from typing import Any
+from urllib.parse import quote
 
 from ba_agent.bot.chat_parse import ChatReader
 from ba_agent.bot.google_meet.scripts import PAGE_OBSERVER_JS, REJECT_INCOMING_VIDEO_JS
@@ -16,9 +22,11 @@ from ba_agent.bot.google_meet.selectors import (
     CAPTION_REGION,
     CHAT_BOX,
     CHAT_BUTTON,
+    DISMISS_BUTTONS,
     ENDED,
     JOIN_BUTTONS,
     LEAVE_CALL,
+    LOBBY_TEXTS,
     MIC_OFF_STATE,
     MIC_ON_ACTION,
     MORE_OPTIONS,
@@ -26,6 +34,7 @@ from ba_agent.bot.google_meet.selectors import (
     PARTICIPANT,
     PARTICIPANT_SELF,
     RECEIVE_RESOLUTION,
+    REJECTED_TEXTS,
     SETTINGS_ITEM,
     TURN_OFF_CAPTIONS,
     TURN_ON_CAPTIONS,
@@ -36,6 +45,9 @@ from ba_agent.config import Settings, resolve_path, validate_meet_url
 from ba_agent.models import ChatMessage, PostReason
 
 logger = logging.getLogger("ba_agent.meet")
+
+_PERSISTENT_BROWSERS: dict[str, tuple[Any, Any]] = {}
+_SEEDED_PROFILES: set[str] = set()
 
 
 class MeetDisconnected(RuntimeError):
@@ -72,37 +84,183 @@ class GoogleMeetAdapter:
             return 0.0
         return time.monotonic() - self._admitted_at
 
-    async def join(self, url: str) -> None:
+    def _profile_key(self) -> str:
+        return str(self.profile_dir.resolve())
+
+    def _should_keep_browser(self) -> bool:
+        return bool(self.settings.browser.keep_alive) and "PYTEST_CURRENT_TEST" not in os.environ
+
+    def _cleanup_stale_locks(self) -> None:
+        for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+            lock_path = self.profile_dir / name
+            if lock_path.exists() or lock_path.is_symlink():
+                try:
+                    lock_path.unlink()
+                except OSError:
+                    pass
+
+    async def _ensure_browser(self) -> None:
         from playwright.async_api import async_playwright
 
-        url = validate_meet_url(url)
-        self.profile_dir.mkdir(parents=True, exist_ok=True)
-        self._playwright = await async_playwright().start()
-        args = [
-            "--disable-blink-features=AutomationControlled",
-            "--use-fake-ui-for-media-stream",
-            "--use-fake-device-for-media-stream",
-            "--autoplay-policy=no-user-gesture-required",
-            "--disable-dev-shm-usage",
-        ]
-        if self.settings.browser.no_sandbox:
-            args.append("--no-sandbox")
-        self._context = await self._playwright.chromium.launch_persistent_context(
-            user_data_dir=str(self.profile_dir),
-            headless=self.settings.browser.headless,
-            ignore_default_args=["--enable-automation"],
-            args=args,
-            viewport={"width": 1280, "height": 720},
-        )
-        if not self.settings.browser.receive_video:
-            await self._context.add_init_script(REJECT_INCOMING_VIDEO_JS)
-        await self._context.add_init_script(PAGE_OBSERVER_JS)
+        key = self._profile_key()
+        if self._context is None and self._should_keep_browser() and key in _PERSISTENT_BROWSERS:
+            cached_pw, cached_ctx = _PERSISTENT_BROWSERS[key]
+            try:
+                _ = cached_ctx.pages
+                self._playwright = cached_pw
+                self._context = cached_ctx
+            except Exception:
+                _PERSISTENT_BROWSERS.pop(key, None)
+
+        if self._context is None:
+            self.profile_dir.mkdir(parents=True, exist_ok=True)
+            self._cleanup_stale_locks()
+            self._playwright = await async_playwright().start()
+            args = [
+                "--disable-blink-features=AutomationControlled",
+                "--use-fake-ui-for-media-stream",
+                "--use-fake-device-for-media-stream",
+                "--autoplay-policy=no-user-gesture-required",
+                "--disable-dev-shm-usage",
+            ]
+            if self.settings.browser.no_sandbox:
+                args.append("--no-sandbox")
+            self._context = await self._playwright.chromium.launch_persistent_context(
+                user_data_dir=str(self.profile_dir),
+                headless=self.settings.browser.headless,
+                ignore_default_args=["--enable-automation"],
+                args=args,
+                viewport={"width": 1280, "height": 720},
+            )
+            if not self.settings.browser.receive_video:
+                await self._context.add_init_script(REJECT_INCOMING_VIDEO_JS)
+            await self._context.add_init_script(PAGE_OBSERVER_JS)
+            if self._should_keep_browser():
+                _PERSISTENT_BROWSERS[key] = (self._playwright, self._context)
+
+        await self._seed_google_cookies()
         if self._context.pages:
             self.page = self._context.pages[0]
+            for extra in list(self._context.pages[1:]):
+                try:
+                    await extra.close()
+                except Exception:
+                    pass
         else:
             self.page = await self._context.new_page()
+
+    async def _seed_google_cookies(self) -> None:
+        if self._context is None:
+            return
+        key = self._profile_key()
+        if key in _SEEDED_PROFILES:
+            return
+        secret = self.settings.meeting.google_cookies_b64
+        raw = secret.get_secret_value().strip() if secret is not None else ""
+        if not raw:
+            return
+        try:
+            if raw.startswith("z:"):
+                decoded = zlib.decompress(base64.b64decode(raw[2:])).decode("utf-8")
+            else:
+                decoded = base64.b64decode(raw).decode("utf-8")
+            cookies = json.loads(decoded)
+            if isinstance(cookies, list) and cookies:
+                await self._context.add_cookies(cookies)
+                _SEEDED_PROFILES.add(key)
+                logger.info("seeded %s Google cookies into browser profile", len(cookies))
+        except Exception:
+            logger.warning("failed to seed Google cookies from BA_MEETING__GOOGLE_COOKIES_B64")
+
+    async def _has_google_auth_cookies(self) -> bool:
+        if self._context is None:
+            return False
+        try:
+            cookies = await self._context.cookies(
+                ["https://google.com", "https://accounts.google.com", "https://meet.google.com"]
+            )
+            names = {str(c.get("name") or "") for c in cookies}
+            return bool(names & {"SID", "__Secure-1PSID", "__Secure-3PSID"})
+        except Exception:
+            return False
+
+    def _google_credentials(self) -> tuple[str, str]:
+        email = (self.settings.meeting.google_email or "").strip()
+        pwd_secret = self.settings.meeting.google_password
+        password = pwd_secret.get_secret_value().strip() if pwd_secret is not None else ""
+        return email, password
+
+    async def _perform_google_login(self, continue_url: str = "https://meet.google.com/") -> bool:
+        if self.page is None:
+            return False
+        email, password = self._google_credentials()
+        if not email or not password:
+            return False
+        login_url = (
+            "https://accounts.google.com/ServiceLogin?service=wise&passive=true&continue="
+            + quote(continue_url, safe="")
+        )
+        logger.info("signing in to Google account %s", email)
+        try:
+            await self.page.goto(login_url, wait_until="domcontentloaded")
+            email_input = self.page.locator("input#identifierId, input[type='email']")
+            if await email_input.count() == 0:
+                try:
+                    await email_input.first.wait_for(state="visible", timeout=8000)
+                except Exception:
+                    pass
+            if await email_input.count() > 0 and await email_input.first.is_visible():
+                await email_input.first.fill(email)
+                await email_input.first.press("Enter")
+            pwd_input = self.page.locator("input[name='Passwd'], input[type='password']")
+            try:
+                await pwd_input.first.wait_for(state="visible", timeout=12000)
+            except Exception:
+                pass
+            if await pwd_input.count() > 0 and await pwd_input.first.is_visible():
+                await pwd_input.first.fill(password)
+                await pwd_input.first.press("Enter")
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                if await self._has_google_auth_cookies():
+                    await asyncio.sleep(1.0)
+                    logger.info("google sign-in succeeded for %s", email)
+                    return True
+                if "meet.google.com" in (self.page.url or ""):
+                    return True
+                await asyncio.sleep(0.5)
+        except Exception:
+            logger.exception("google sign-in failed for %s", email)
+        return await self._has_google_auth_cookies()
+
+    async def _ensure_google_login(self, url: str) -> None:
+        if not url.startswith("https://meet.google.com/"):
+            return
+        email, password = self._google_credentials()
+        if self.settings.meeting.join_mode != "signed_in" and not (email and password):
+            return
+        if not await self._has_google_auth_cookies() and email and password:
+            await self._perform_google_login(url)
+
+    async def join(self, url: str) -> None:
+        url = validate_meet_url(url)
+        self._left = False
+        self._admitted_at = None
+        await self._ensure_browser()
+        await self._ensure_google_login(url)
         await self.page.goto(url, wait_until="domcontentloaded")
         await self._wait_for_prejoin()
+        email, password = self._google_credentials()
+        if (
+            url.startswith("https://meet.google.com/")
+            and email
+            and password
+            and await self.page.get_by_label(NAME_LABEL).count() > 0
+        ):
+            # Cookies expired or were cleared; sign in and reload the meeting pre-join page.
+            if await self._perform_google_login(url):
+                await self.page.goto(url, wait_until="domcontentloaded")
+                await self._wait_for_prejoin()
         await self._mute()
         await self._fill_name()
         await self._click_join()
@@ -113,6 +271,7 @@ class GoogleMeetAdapter:
                 f"Not admitted within {self.settings.meeting.lobby_timeout_s}s"
             )
         self._admitted_at = time.monotonic()
+        await self._mute()
         logger.info("admitted as %s", self.settings.meeting.bot_name)
         if not self.settings.browser.receive_video:
             await self._stop_incoming_video()
@@ -129,9 +288,26 @@ class GoogleMeetAdapter:
                     await button.first.click()
         except Exception:
             logger.info("leave click skipped")
+        if self._should_keep_browser():
+            try:
+                if self.page is not None:
+                    await self.page.goto("about:blank")
+            except Exception:
+                pass
+            return
         await self.close()
 
-    async def close(self) -> None:
+    async def close(self, *, force: bool = True) -> None:
+        if not force and self._should_keep_browser():
+            try:
+                if self.page is not None:
+                    await self.page.goto("about:blank")
+            except Exception:
+                pass
+            return
+        key = self._profile_key()
+        _PERSISTENT_BROWSERS.pop(key, None)
+        _SEEDED_PROFILES.discard(key)
         try:
             if self._context is not None:
                 await self._context.close()
@@ -144,6 +320,7 @@ class GoogleMeetAdapter:
             logger.info("playwright already stopped")
         self._context = None
         self._playwright = None
+        self.page = None
 
     async def enable_captions(self) -> bool:
         button = self.page.get_by_role("button", name=TURN_ON_CAPTIONS)
@@ -243,7 +420,13 @@ class GoogleMeetAdapter:
             if await self.page.locator(ENDED).count() > 0:
                 return True
             if self._admitted_at is not None:
-                return await self.page.get_by_role("button", name=LEAVE_CALL).count() == 0
+                if await self.page.get_by_role("button", name=LEAVE_CALL).count() > 0:
+                    return False
+                if await self.page.get_by_role("button", name=TURN_ON_CAPTIONS).count() > 0:
+                    return False
+                if await self.page.get_by_role("button", name=TURN_OFF_CAPTIONS).count() > 0:
+                    return False
+                return True
             return False
         except Exception:
             return True
@@ -304,35 +487,64 @@ class GoogleMeetAdapter:
             except Exception:
                 return
 
+    async def _dismiss_prejoin_prompts(self) -> None:
+        if self.page is None:
+            return
+        for dismiss in DISMISS_BUTTONS:
+            btn = self.page.get_by_role("button", name=dismiss)
+            if await btn.count():
+                try:
+                    await btn.first.click(timeout=500)
+                    await asyncio.sleep(0.2)
+                except Exception:
+                    pass
+
     async def _wait_for_prejoin(self) -> None:
-        deadline = time.monotonic() + 20
+        started = time.monotonic()
+        deadline = started + 25
         while time.monotonic() < deadline:
-            for dismiss in ("Continue without microphone and camera", "Dismiss", "Got it"):
-                btn = self.page.get_by_role("button", name=dismiss)
-                if await btn.count():
-                    try:
-                        await btn.first.click(timeout=500)
-                    except Exception:
-                        pass
+            await self._dismiss_prejoin_prompts()
+            has_join = False
             for label in JOIN_BUTTONS:
                 if await self.page.get_by_role("button", name=label).count():
+                    has_join = True
+                    break
+            if has_join:
+                has_media = (
+                    await self.page.get_by_role("button", name=MIC_ON_ACTION).count() > 0
+                    or await self.page.get_by_role("button", name=MIC_OFF_STATE).count() > 0
+                    or await self.page.locator("#prejoin").count() > 0
+                )
+                if has_media or time.monotonic() - started >= 2.5:
                     return
-            if await self.page.get_by_label(NAME_LABEL).count():
-                return
             await asyncio.sleep(0.25)
 
     async def _mute(self) -> None:
+        await self._dismiss_prejoin_prompts()
         for label in (MIC_ON_ACTION, CAM_ON_ACTION):
             button = self.page.get_by_role("button", name=label)
+            if await button.count() == 0:
+                button = self.page.locator(
+                    f'button[aria-label*="{label}" i], [role="button"][aria-label*="{label}" i]'
+                )
             if await button.count():
-                await button.first.click()
+                try:
+                    await button.first.click(timeout=1500)
+                    await asyncio.sleep(0.15)
+                except Exception:
+                    pass
 
     async def _fill_name(self) -> None:
         field = self.page.get_by_label(NAME_LABEL)
         if await field.count():
-            await field.first.fill(self.settings.meeting.bot_name)
+            try:
+                if await field.first.is_visible():
+                    await field.first.fill(self.settings.meeting.bot_name)
+            except Exception:
+                pass
 
     async def _click_join(self) -> None:
+        await self._dismiss_prejoin_prompts()
         for label in JOIN_BUTTONS:
             button = self.page.get_by_role("button", name=label)
             if await button.count():
@@ -341,12 +553,37 @@ class GoogleMeetAdapter:
         raise RuntimeError("Join button not found")
 
     async def _wait_until_admitted(self) -> bool:
-        timeout_ms = self.settings.meeting.lobby_timeout_s * 1000
-        try:
-            await self.page.get_by_role("button", name=LEAVE_CALL).wait_for(
-                state="visible",
-                timeout=timeout_ms,
-            )
-            return True
-        except Exception:
-            return False
+        started = time.monotonic()
+        deadline = started + self.settings.meeting.lobby_timeout_s
+        while time.monotonic() < deadline:
+            try:
+                if await self.page.locator("[data-ba-in-call='true']").count() > 0:
+                    return True
+                body_text = ""
+                try:
+                    body_text = await self.page.inner_text("body")
+                except Exception:
+                    body_text = ""
+                for rejected in REJECTED_TEXTS:
+                    if rejected in body_text:
+                        logger.warning("Meet rejected join: %s", rejected)
+                        return False
+                in_lobby = any(lobby in body_text for lobby in LOBBY_TEXTS)
+                if not in_lobby:
+                    has_captions_btn = (
+                        await self.page.get_by_role("button", name=TURN_ON_CAPTIONS).count() > 0
+                        or await self.page.get_by_role("button", name=TURN_OFF_CAPTIONS).count() > 0
+                    )
+                    if has_captions_btn:
+                        return True
+                    leave_btn = self.page.get_by_role("button", name=LEAVE_CALL)
+                    if await leave_btn.count() > 0 and await leave_btn.first.is_visible():
+                        is_real_meet = (self.page.url or "").startswith("https://meet.google.com/")
+                        if not is_real_meet or (
+                            time.monotonic() - started >= 3.0 and body_text.strip() != ""
+                        ):
+                            return True
+            except Exception:
+                pass
+            await asyncio.sleep(0.3)
+        return False

@@ -75,6 +75,9 @@ if [[ "$SKIP_SECRETS" -eq 0 ]]; then
   # Preserve caller-supplied environment overrides before sourcing .env.
   CALLER_MEET_URL="${MEET_URL:-}"
   CALLER_WEBHOOK_SECRET="${BA_WEBHOOK_SECRET:-}"
+  CALLER_GOOGLE_EMAIL="${BA_MEETING__GOOGLE_EMAIL:-}"
+  CALLER_GOOGLE_PASSWORD="${BA_MEETING__GOOGLE_PASSWORD:-}"
+  CALLER_GOOGLE_COOKIES_B64="${BA_MEETING__GOOGLE_COOKIES_B64:-}"
   CALLER_LLM_KEY="${BA_LLM__API_KEY:-}"
   CALLER_OPENAI_KEY="${OPENAI_API_KEY:-}"
   CALLER_LLM_MODEL="${BA_LLM__MODEL:-}"
@@ -90,6 +93,9 @@ if [[ "$SKIP_SECRETS" -eq 0 ]]; then
 
   [[ -n "$CALLER_MEET_URL" ]] && MEET_URL="$CALLER_MEET_URL"
   [[ -n "$CALLER_WEBHOOK_SECRET" ]] && BA_WEBHOOK_SECRET="$CALLER_WEBHOOK_SECRET"
+  [[ -n "$CALLER_GOOGLE_EMAIL" ]] && BA_MEETING__GOOGLE_EMAIL="$CALLER_GOOGLE_EMAIL"
+  [[ -n "$CALLER_GOOGLE_PASSWORD" ]] && BA_MEETING__GOOGLE_PASSWORD="$CALLER_GOOGLE_PASSWORD"
+  [[ -n "$CALLER_GOOGLE_COOKIES_B64" ]] && BA_MEETING__GOOGLE_COOKIES_B64="$CALLER_GOOGLE_COOKIES_B64"
   [[ -n "$CALLER_LLM_KEY" ]] && BA_LLM__API_KEY="$CALLER_LLM_KEY"
   [[ -n "$CALLER_OPENAI_KEY" ]] && OPENAI_API_KEY="$CALLER_OPENAI_KEY"
   [[ -n "$CALLER_LLM_MODEL" ]] && BA_LLM__MODEL="$CALLER_LLM_MODEL"
@@ -160,9 +166,58 @@ PY
   cleanup() { rm -f "$tmp"; }
   trap cleanup EXIT
 
+  # Export authenticated Google cookies from local browser-profile if available.
+  if [[ -z "${BA_MEETING__GOOGLE_COOKIES_B64:-}" && -d "$ROOT/data/state/browser-profile" ]] && command -v uv >/dev/null 2>&1; then
+    BA_MEETING__GOOGLE_COOKIES_B64="$(uv run python - "$ROOT/data/state/browser-profile" 2>/dev/null <<'PY' || true
+import asyncio, base64, json, sys, zlib
+from pathlib import Path
+
+async def main() -> None:
+    profile = Path(sys.argv[1])
+    for lock in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+        p = profile / lock
+        if p.exists() or p.is_symlink():
+            try:
+                p.unlink()
+            except OSError:
+                pass
+    from playwright.async_api import async_playwright
+    async with async_playwright() as pw:
+        ctx = await pw.chromium.launch_persistent_context(
+            user_data_dir=str(profile),
+            headless=True,
+            ignore_default_args=["--enable-automation"],
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+        cookies = await ctx.cookies(["https://google.com", "https://accounts.google.com", "https://meet.google.com"])
+        await ctx.close()
+    names = {c.get("name") for c in cookies}
+    if names & {"SID", "__Secure-1PSID", "__Secure-3PSID"}:
+        slim = [
+            {
+                "name": c["name"],
+                "value": c["value"],
+                "domain": c["domain"],
+                "path": c.get("path", "/"),
+                "secure": bool(c.get("secure", True)),
+                "httpOnly": bool(c.get("httpOnly", False)),
+            }
+            for c in cookies
+        ]
+        raw = json.dumps(slim, separators=(",", ":")).encode("utf-8")
+        print("z:" + base64.b64encode(zlib.compress(raw, 9)).decode("ascii"))
+
+asyncio.run(main())
+PY
+)"
+  fi
+
   # JSON bulk upload handles special characters in API tokens safely.
   export MEET_URL="${MEET_URL:-}"
   export BA_WEBHOOK_SECRET="${BA_WEBHOOK_SECRET:-}"
+  export BA_MEETING__GOOGLE_EMAIL="${BA_MEETING__GOOGLE_EMAIL:-}"
+  export BA_MEETING__GOOGLE_PASSWORD="${BA_MEETING__GOOGLE_PASSWORD:-}"
+  export BA_MEETING__GOOGLE_COOKIES_B64="${BA_MEETING__GOOGLE_COOKIES_B64:-}"
   export BA_LLM__API_KEY BA_NOTION__TOKEN BA_NOTION__DATABASES__SUMMARY BA_NOTION__DATABASES__TASKS
   export BA_LLM__MODEL="${BA_LLM__MODEL:-}"
   SECRET_KEYS_CSV="$(IFS=,; echo "${SECRET_KEYS[*]}")" \
@@ -177,7 +232,14 @@ for key in keys:
     if not value:
         raise SystemExit(f"error: empty secret after load: {key}")
     payload[key] = value
-for optional_key in ("MEET_URL", "BA_LLM__MODEL", "BA_WEBHOOK_SECRET"):
+for optional_key in (
+    "MEET_URL",
+    "BA_LLM__MODEL",
+    "BA_WEBHOOK_SECRET",
+    "BA_MEETING__GOOGLE_EMAIL",
+    "BA_MEETING__GOOGLE_PASSWORD",
+    "BA_MEETING__GOOGLE_COOKIES_B64",
+):
     value = (os.environ.get(optional_key) or "").strip()
     if value:
         payload[optional_key] = value

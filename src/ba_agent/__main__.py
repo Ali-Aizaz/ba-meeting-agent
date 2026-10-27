@@ -19,19 +19,62 @@ def main(argv: list[str] | None = None) -> None:
     join = sub.add_parser("join", help="Join a Google Meet URL")
     join.add_argument("url")
     join.add_argument("--headless", action="store_true")
+    join.add_argument("--once", action="store_true", help="Close browser after one meeting")
+    sub.add_parser("login", help="Sign in to Google in the persistent browser profile")
     sub.add_parser("status", help="Read the local /status endpoint")
     args = parser.parse_args(argv)
     settings = load_settings()
     if args.command == "status":
         _print_status(settings)
         return
+    if args.command == "login":
+        asyncio.run(_run_login(settings))
+        return
     if args.headless:
         settings.browser.headless = True
+    if args.once:
+        settings.browser.keep_alive = False
     start_join(settings, args.url, launch_browser=lambda: None)
+    if _delegate_to_running_instance(settings, args.url):
+        return
     try:
         asyncio.run(_run_until_stopped(settings, args.url))
     except KeyboardInterrupt:
         sys.exit(130)
+
+
+def _delegate_to_running_instance(settings: Settings, url: str) -> bool:
+    """If a local ba_agent process is already running with an open browser, switch it to url."""
+    base = f"http://{settings.server.status_host}:{settings.server.status_port}"
+    try:
+        res = httpx.post(f"{base}/join", json={"url": url}, timeout=2.0)
+        if res.status_code == 200 and res.json().get("ok"):
+            print(f"Sent join request to running browser session: {url}")
+            return True
+    except Exception:
+        return False
+    return False
+
+
+async def _run_login(settings: Settings) -> None:
+    from ba_agent.bot.google_meet.adapter import GoogleMeetAdapter
+
+    adapter = GoogleMeetAdapter(settings)
+    try:
+        await adapter._ensure_browser()
+        email, password = adapter._google_credentials()
+        if email and password:
+            await adapter._perform_google_login("https://meet.google.com/")
+            print(f"Signed in as {email} in {adapter.profile_dir}")
+        else:
+            await adapter.page.goto("https://accounts.google.com/", wait_until="domcontentloaded")
+            print(f"Browser opened at {adapter.profile_dir}. Sign in, then press Ctrl+C.")
+            while True:
+                await asyncio.sleep(1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        await adapter.close(force=True)
 
 
 async def _run_until_stopped(settings: Settings, url: str) -> None:

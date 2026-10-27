@@ -29,6 +29,9 @@ class MeetingSettings(_Model):
     platform: str = "google_meet"
     join_mode: str = "signed_in"
     bot_name: str = "TechSol BA"
+    google_email: str = ""
+    google_password: SecretStr | None = None
+    google_cookies_b64: SecretStr | None = None
     consent_message: str = CONSENT_MESSAGE
     timezone: str = "UTC"
     lobby_timeout_s: int = 300
@@ -100,6 +103,7 @@ class BrowserSettings(_Model):
     rejoin_limit: int = 3
     no_sandbox: bool = True
     receive_video: bool = False
+    keep_alive: bool = True
 
 
 def package_root() -> Path:
@@ -197,6 +201,8 @@ class Settings(BaseSettings):
         data = self.model_dump(mode="python")
         data["llm"]["api_key"] = "***"
         data["notion"]["token"] = "***"
+        data["meeting"]["google_password"] = "***"
+        data["meeting"]["google_cookies_b64"] = "***"
         return f"Settings({data})"
 
     __str__ = __repr__

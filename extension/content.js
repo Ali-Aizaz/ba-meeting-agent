@@ -116,15 +116,19 @@
 
   function tryAutoAdmitBot() {
     if (!cachedSettings.autoAdmit) return;
-    const botName = (cachedSettings.botName || "TechSol BA").trim().toLowerCase();
-    if (!botName) return;
+    const configuredName = (cachedSettings.botName || "TechSol BA").trim().toLowerCase();
+    const botNames = Array.from(
+      new Set([configuredName, "techsol ba", "ba assistant", "baassistant703"].filter(Boolean)),
+    );
+    if (botNames.length === 0) return;
 
     const dialogs = document.querySelectorAll(
       '[role="dialog"], [role="alertdialog"], [aria-modal="true"], [aria-live]',
     );
     for (const dialog of dialogs) {
       const dialogText = (dialog.innerText || dialog.textContent || "").toLowerCase();
-      if (!dialogText.includes(botName)) continue;
+      const matchedName = botNames.find((name) => dialogText.includes(name));
+      if (!matchedName) continue;
 
       const buttons = dialog.querySelectorAll('button, [role="button"]');
       for (const btn of buttons) {
@@ -136,9 +140,9 @@
         )
           .trim()
           .toLowerCase();
-        if (label === "admit" || label === `admit ${botName}`) {
+        if (label === "admit" || botNames.some((name) => label === `admit ${name}`)) {
           btn.click();
-          showToast(`TechSol BA: Auto-admitted ${cachedSettings.botName} ✓`, "success");
+          showToast(`TechSol BA: Auto-admitted ${cachedSettings.botName || "BA Assistant"} ✓`, "success");
           return;
         }
       }
