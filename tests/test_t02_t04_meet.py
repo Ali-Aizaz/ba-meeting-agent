@@ -124,6 +124,16 @@ async def test_t02_i1_fake_meet(fake_meet_url: str, tmp_path: Path, monkeypatch)
     adapter = await _join_or_skip(settings, fake_meet_url, tmp_path)
     try:
         assert await adapter.mic_is_off()
+        assert await adapter.cam_is_off()
+        tracks_locked_off = await adapter.page.evaluate(
+            """async () => {
+              const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+              const tracks = stream.getTracks();
+              tracks.forEach((t) => { t.enabled = true; });
+              return tracks.length > 0 && tracks.every((t) => t.enabled === false);
+            }"""
+        )
+        assert tracks_locked_off is True
         messages = await adapter.collect_chat()
         sara = [(m.sender, m.text, m.is_self) for m in messages]
         assert ("Sara", "Hello team", False) in sara

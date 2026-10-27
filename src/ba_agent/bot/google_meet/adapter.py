@@ -18,6 +18,7 @@ from ba_agent.bot.chat_parse import ChatReader
 from ba_agent.bot.google_meet.scripts import PAGE_OBSERVER_JS, REJECT_INCOMING_VIDEO_JS
 from ba_agent.bot.google_meet.selectors import (
     AUDIO_ONLY,
+    CAM_OFF_STATE,
     CAM_ON_ACTION,
     CAPTION_REGION,
     CHAT_BOX,
@@ -354,6 +355,7 @@ class GoogleMeetAdapter:
         self.page = None
 
     async def enable_captions(self) -> bool:
+        await self._mute()
         button = self.page.get_by_role("button", name=TURN_ON_CAPTIONS)
         if await button.count():
             await button.first.click()
@@ -487,6 +489,11 @@ class GoogleMeetAdapter:
         on = await self.page.get_by_role("button", name=MIC_ON_ACTION).count()
         return off > 0 and on == 0
 
+    async def cam_is_off(self) -> bool:
+        off = await self.page.get_by_role("button", name=CAM_OFF_STATE).count()
+        on = await self.page.get_by_role("button", name=CAM_ON_ACTION).count()
+        return off > 0 and on == 0
+
     async def screenshot(self, label: str) -> None:
         if self.page is None:
             return
@@ -586,17 +593,21 @@ class GoogleMeetAdapter:
     async def _mute(self) -> None:
         await self._dismiss_prejoin_prompts()
         for label in (MIC_ON_ACTION, CAM_ON_ACTION):
-            button = self.page.get_by_role("button", name=label)
-            if await button.count() == 0:
-                button = self.page.locator(
+            locator = self.page.get_by_role("button", name=label).or_(
+                self.page.locator(
                     f'button[aria-label*="{label}" i], [role="button"][aria-label*="{label}" i]'
                 )
-            if await button.count():
+            )
+            count = await locator.count()
+            for idx in range(count):
+                candidate = locator.nth(idx)
                 try:
-                    await button.first.click(timeout=1500)
-                    await asyncio.sleep(0.15)
+                    if await candidate.is_visible():
+                        await candidate.click(timeout=1500)
+                        await asyncio.sleep(0.15)
+                        break
                 except Exception:
-                    pass
+                    continue
 
     async def _fill_name(self) -> None:
         field = self.page.get_by_label(NAME_LABEL)
@@ -610,6 +621,7 @@ class GoogleMeetAdapter:
     async def _click_join(self) -> None:
         await self._dismiss_prejoin_prompts()
         await self._fill_name()
+        await self._mute()
         for label in JOIN_BUTTONS:
             button = self.page.get_by_role("button", name=label)
             if await button.count():

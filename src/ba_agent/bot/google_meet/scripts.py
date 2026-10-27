@@ -15,14 +15,67 @@ PAGE_OBSERVER_JS = r"""
   } catch (err) {}
 
   try {
+    function silenceTrack(track) {
+      if (!track) return;
+      try {
+        track.enabled = false;
+        Object.defineProperty(track, "enabled", {
+          configurable: true,
+          enumerable: true,
+          get: () => false,
+          set: () => false,
+        });
+      } catch (err) {}
+    }
+
+    function createBlankVideoTrack() {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = 2;
+        canvas.height = 2;
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          ctx.fillStyle = "#000000";
+          ctx.fillRect(0, 0, 2, 2);
+        }
+        if (typeof canvas.captureStream === "function") {
+          const stream = canvas.captureStream(0);
+          const tracks =
+            stream && typeof stream.getVideoTracks === "function"
+              ? stream.getVideoTracks()
+              : [];
+          if (tracks.length > 0) {
+            silenceTrack(tracks[0]);
+            return tracks[0];
+          }
+        }
+      } catch (err) {}
+      return null;
+    }
+
     if (navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === "function") {
       const origGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
       navigator.mediaDevices.getUserMedia = function () {
         return origGetUserMedia.apply(this, arguments).then((stream) => {
-          if (stream && typeof stream.getTracks === "function") {
-            stream.getTracks().forEach((track) => {
-              track.enabled = false;
+          if (stream && typeof stream.getVideoTracks === "function") {
+            stream.getVideoTracks().forEach((track) => {
+              silenceTrack(track);
+              const blank = createBlankVideoTrack();
+              if (
+                blank &&
+                typeof stream.removeTrack === "function" &&
+                typeof stream.addTrack === "function"
+              ) {
+                try {
+                  stream.removeTrack(track);
+                  if (typeof track.stop === "function") track.stop();
+                  stream.addTrack(blank);
+                } catch (err) {}
+              }
             });
+          }
+          if (stream && typeof stream.getTracks === "function") {
+            stream.getTracks().forEach(silenceTrack);
           }
           return stream;
         });
