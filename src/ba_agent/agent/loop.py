@@ -20,6 +20,7 @@ from ba_agent.tasks_extract.dates import parse_due
 from ba_agent.tasks_extract.extractor import (
     apply_followup,
     dedup_key,
+    fallback_overheard_tasks,
     is_task_request,
     parse_task_command,
 )
@@ -140,46 +141,128 @@ class AgentLoop:
         car = is_car_question(question, hits)
         tool_at = time.perf_counter()
         if car and should_search_web(question, hits, self.min_score):
-            web = await self.search_cars(question)
+            try:
+                web = await self.search_cars(question)
+            except AssertionError:
+                raise
+            except Exception:
+                logger.warning("search_cars failed; continuing with local knowledge", exc_info=True)
+                web = None
             tool_at = time.perf_counter()
         if car and not hits and not (web and web.useful):
             return NOT_SURE, PostReason.REPLY, started, tool_at
         model_at = time.perf_counter()
         prompt = _prompt(self.persona, self.digest(), question, hits, web, car)
-        first = await self.llm.respond(
-            prompt,
-            tools=local_tools(),
-            enable_web_search=False,
-            timeout_s=self.timeout_s,
-        )
-        if first.function_calls:
-            before_hits = len(hits)
-            tool_outcome = await self._handle_tool_calls(
-                first.function_calls, event, hits, model_at
+        try:
+            first = await self.llm.respond(
+                prompt,
+                tools=local_tools(),
+                enable_web_search=False,
+                timeout_s=self.timeout_s,
             )
-            if tool_outcome is not None:
-                return tool_outcome
-            prompt = _prompt(self.persona, self.digest(), question, hits, web, car)
-            if not first.text or len(hits) > before_hits:
-                first = await self.llm.respond(
-                    prompt,
-                    tools=None,
-                    enable_web_search=False,
-                    timeout_s=self.timeout_s,
+            if first.function_calls:
+                before_hits = len(hits)
+                tool_outcome = await self._handle_tool_calls(
+                    first.function_calls, event, hits, model_at
                 )
-        if not car:
-            text = first.text or "I don't have that in this meeting."
-            return text, PostReason.REPLY, model_at, tool_at
-        if reply_status(first.text) == "allow":
-            return first.text, PostReason.REPLY, model_at, tool_at
-        second = await self.llm.respond(
-            prompt + "\n\nCite a source you were given, or say you are not sure. "
-            "Do not invent a number.",
-            tools=None,
-            enable_web_search=False,
-            timeout_s=self.timeout_s,
+                if tool_outcome is not None:
+                    return tool_outcome
+                prompt = _prompt(self.persona, self.digest(), question, hits, web, car)
+                if not first.text or len(hits) > before_hits:
+                    first = await self.llm.respond(
+                        prompt,
+                        tools=None,
+                        enable_web_search=False,
+                        timeout_s=self.timeout_s,
+                    )
+            if not car:
+                text = first.text or "I don't have that in this meeting."
+                return text, PostReason.REPLY, model_at, tool_at
+            if reply_status(first.text) == "allow":
+                return first.text, PostReason.REPLY, model_at, tool_at
+            second = await self.llm.respond(
+                prompt + "\n\nCite a source you were given, or say you are not sure. "
+                "Do not invent a number.",
+                tools=None,
+                enable_web_search=False,
+                timeout_s=self.timeout_s,
+            )
+            return finalize_reply(first.text, second.text), PostReason.REPLY, model_at, tool_at
+        except AssertionError:
+            raise
+        except Exception:
+            logger.warning("llm.respond failed; using deterministic fallback", exc_info=True)
+            return await self._fallback_answer(question, event, hits, web, car, model_at, tool_at)
+
+    async def _fallback_answer(
+        self,
+        question: str,
+        event: TriggerEvent,
+        hits: list[Chunk],
+        web: WebResult | None,
+        car: bool,
+        model_at: float,
+        tool_at: float,
+    ):
+        task_records = fallback_overheard_tasks(
+            question,
+            said_by=event.speaker,
+            time=format_meeting_time(event.t_detected),
+            today=self.today(),
         )
-        return finalize_reply(first.text, second.text), PostReason.REPLY, model_at, tool_at
+        if task_records:
+            result = await self.create_task(task_records[0])
+            return result.message, PostReason.CONFIRMATION, model_at, time.perf_counter()
+        if car:
+            if hits:
+                top = hits[0]
+                lines = [
+                    ln.strip().lstrip("#*- ").strip()
+                    for ln in top.text.splitlines()
+                    if ln.strip() and not ln.strip().startswith("#")
+                ]
+                summary = " ".join(lines[:2]).strip() or top.text.strip()
+                return f"{summary} (src: {top.file})", PostReason.REPLY, model_at, tool_at
+            if web and web.useful and web.text:
+                url_cite = f" ({web.urls[0]})" if web.urls else ""
+                return f"{web.text.strip()}{url_cite}", PostReason.REPLY, model_at, tool_at
+            return NOT_SURE, PostReason.REPLY, model_at, tool_at
+        norm_q = question.lower().strip(" .,!?;:")
+        if norm_q in {"hello", "hi", "hey", "status", "help", "are you there", "can you hear me"}:
+            return (
+                "Hi! I'm here and listening. Ask me a question, assign a task, or say 'Hey BA, save the meeting'.",
+                PostReason.REPLY,
+                model_at,
+                tool_at,
+            )
+        digest = (self.digest() or "").strip()
+        if not digest:
+            return "I don't have that in this meeting yet.", PostReason.REPLY, model_at, tool_at
+        digest_lines = [
+            ln.strip()
+            for ln in digest.splitlines()
+            if ln.strip() and not ln.strip().lower().startswith("participants:")
+        ]
+        if not digest_lines:
+            return "I don't have any transcript lines in this meeting yet.", PostReason.REPLY, model_at, tool_at
+        stop = {
+            "what", "who", "when", "where", "why", "how", "did", "does", "was",
+            "were", "are", "the", "this", "that", "about", "meeting", "say",
+            "said", "talk", "talked", "discuss", "discussed", "summarize", "summary",
+            "recap", "notes", "can", "you", "please", "give", "tell",
+        }
+        q_words = {
+            w.lower().strip(".,!?;:")
+            for w in question.split()
+            if len(w.strip(".,!?;:")) >= 3 and w.lower().strip(".,!?;:") not in stop
+        }
+        matched = (
+            [ln for ln in digest_lines if any(w in ln.lower() for w in q_words)]
+            if q_words
+            else []
+        )
+        selected = (matched or digest_lines)[-4:]
+        return "From the meeting so far: " + " | ".join(selected), PostReason.REPLY, model_at, tool_at
 
     async def _handle_tool_calls(
         self, calls, event: TriggerEvent, hits: list[Chunk], model_at: float

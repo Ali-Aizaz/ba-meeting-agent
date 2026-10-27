@@ -72,6 +72,7 @@ class GoogleMeetAdapter:
         self._ui_lock = asyncio.Lock()
         self._admitted_at: float | None = None
         self._left = False
+        self._last_chat_open_attempt: float = 0.0
         self._chat = ChatReader(settings.meeting.bot_name)
         self._playwright = None
         self._context = None
@@ -212,11 +213,10 @@ class GoogleMeetAdapter:
                 await chooser_item.first.click()
                 await asyncio.sleep(1.5)
             email_input = self.page.locator("input#identifierId, input[type='email']")
-            if await email_input.count() == 0:
-                try:
-                    await email_input.first.wait_for(state="visible", timeout=5000)
-                except Exception:
-                    pass
+            try:
+                await email_input.first.wait_for(state="visible", timeout=5000)
+            except Exception:
+                pass
             if await email_input.count() > 0 and await email_input.first.is_visible():
                 await email_input.first.fill(email)
                 await email_input.first.press("Enter")
@@ -282,11 +282,15 @@ class GoogleMeetAdapter:
                 pass
         await self._wait_for_prejoin()
         email, password = self._google_credentials()
+        cur_url = self.page.url or ""
         if (
             url.startswith("https://meet.google.com/")
             and email
             and password
-            and await self.page.get_by_label(NAME_LABEL).count() > 0
+            and (
+                cur_url.startswith("https://accounts.google.com/")
+                or await self.page.get_by_label(NAME_LABEL).count() > 0
+            )
         ):
             # Cookies expired or were cleared; sign in and reload the meeting pre-join page.
             if await self._perform_google_login(url):
@@ -480,7 +484,52 @@ class GoogleMeetAdapter:
                 logger.warning("post_chat failed", exc_info=True)
                 return False
 
+    async def ensure_chat_open(self) -> bool:
+        if self.page is None:
+            return False
+        async with self._ui_lock:
+            try:
+                await self._dismiss_incall_overlays()
+                box = self._chat_box()
+                if await box.count() > 0:
+                    self.chat_enabled = True
+                    return True
+                opener = self.page.get_by_role("button", name=CHAT_BUTTON).or_(
+                    self.page.locator(
+                        f'button[aria-label*="{CHAT_BUTTON}" i], '
+                        f'[role="button"][aria-label*="{CHAT_BUTTON}" i]'
+                    )
+                )
+                if await opener.count():
+                    try:
+                        await opener.first.click(timeout=2500)
+                    except Exception:
+                        await opener.first.click(force=True, timeout=1500)
+                    deadline = time.monotonic() + 5.0
+                    while time.monotonic() < deadline:
+                        if await box.count() > 0:
+                            self.chat_enabled = True
+                            return True
+                        await asyncio.sleep(0.2)
+            except Exception:
+                logger.debug("ensure_chat_open failed", exc_info=True)
+            return False
+
     async def collect_chat(self) -> list[ChatMessage]:
+        if (
+            self.page is not None
+            and (self.page.url or "").startswith("https://meet.google.com/")
+            and time.monotonic() - self._last_chat_open_attempt > 10.0
+        ):
+            try:
+                has_root = await self.page.evaluate(
+                    "() => window.__baHasChatRoot ? window.__baHasChatRoot() : true"
+                )
+                if not has_root:
+                    self._last_chat_open_attempt = time.monotonic()
+                    await self.ensure_chat_open()
+            except Exception:
+                pass
         nodes = await self.page.evaluate(
             "() => window.__baDrainChat ? window.__baDrainChat() : []"
         )
@@ -505,6 +554,37 @@ class GoogleMeetAdapter:
         return frames
 
     async def other_participant_count(self) -> int | None:
+        if (self.page.url or "").startswith("https://meet.google.com/"):
+            try:
+                info = await self.page.evaluate(
+                    """() => {
+                        const bodyText = (document.body && document.body.innerText) || "";
+                        if (bodyText.includes("You're the only one here")) return 0;
+                        const els = Array.from(document.querySelectorAll("[data-participant-id]"));
+                        if (els.length === 0) return null;
+                        const ids = new Set();
+                        const selfIds = new Set();
+                        for (const el of els) {
+                            const pid = el.getAttribute("data-participant-id") || "";
+                            if (!pid) continue;
+                            ids.add(pid);
+                            if (
+                                el.hasAttribute("data-self-name") ||
+                                el.querySelector("[data-self-name]") ||
+                                el.closest("[data-self-name]")
+                            ) {
+                                selfIds.add(pid);
+                            }
+                        }
+                        if (ids.size === 0) return null;
+                        if (selfIds.size > 0) return Math.max(0, ids.size - selfIds.size);
+                        return Math.max(0, ids.size - 1);
+                    }"""
+                )
+                if info is not None:
+                    return int(info)
+            except Exception:
+                pass
         count = await self.page.locator(PARTICIPANT).count()
         if count == 0:
             return None
@@ -641,6 +721,8 @@ class GoogleMeetAdapter:
         started = time.monotonic()
         deadline = started + 25
         while time.monotonic() < deadline:
+            if (self.page.url or "").startswith("https://accounts.google.com/"):
+                return
             await self._dismiss_prejoin_prompts()
             leave_btn = self.page.locator('button[aria-label*="Leave call" i]')
             if (
@@ -692,6 +774,9 @@ class GoogleMeetAdapter:
             for idx in range(count):
                 candidate = locator.nth(idx)
                 try:
+                    is_muted = await candidate.get_attribute("data-is-muted")
+                    if is_muted == "true":
+                        continue
                     if await candidate.is_visible():
                         await candidate.click(timeout=1500)
                         await asyncio.sleep(0.15)

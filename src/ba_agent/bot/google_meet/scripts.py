@@ -7,6 +7,7 @@ PAGE_OBSERVER_JS = r"""
   window.__baChatQueue = [];
   window.__baCaptionQueue = [];
   const seenChat = new Set();
+  const recentChatText = new Map();
   let nextRowId = 0;
   let nextChatId = 0;
 
@@ -45,6 +46,7 @@ PAGE_OBSERVER_JS = r"""
               ? stream.getVideoTracks()
               : [];
           if (tracks.length > 0) {
+            if (typeof tracks[0].stop === "function") tracks[0].stop();
             silenceTrack(tracks[0]);
             return tracks[0];
           }
@@ -53,10 +55,40 @@ PAGE_OBSERVER_JS = r"""
       return null;
     }
 
+    const isMeetHost =
+      typeof window !== "undefined" &&
+      window.location &&
+      window.location.hostname === "meet.google.com";
+
+    if (
+      isMeetHost &&
+      navigator.mediaDevices &&
+      typeof navigator.mediaDevices.enumerateDevices === "function"
+    ) {
+      const origEnumerate = navigator.mediaDevices.enumerateDevices.bind(navigator.mediaDevices);
+      navigator.mediaDevices.enumerateDevices = function () {
+        return origEnumerate.apply(this, arguments).then((devices) =>
+          Array.isArray(devices)
+            ? devices.filter((d) => !d || d.kind !== "videoinput")
+            : devices
+        );
+      };
+    }
+
     if (navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === "function") {
       const origGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
-      navigator.mediaDevices.getUserMedia = function () {
-        return origGetUserMedia.apply(this, arguments).then((stream) => {
+      navigator.mediaDevices.getUserMedia = function (constraints) {
+        if (isMeetHost && constraints && typeof constraints === "object") {
+          if (constraints.video && !constraints.audio) {
+            return Promise.reject(
+              new DOMException("Requested device not found", "NotFoundError")
+            );
+          }
+          if (constraints.video && constraints.audio) {
+            constraints = { audio: constraints.audio };
+          }
+        }
+        return origGetUserMedia.call(this, constraints).then((stream) => {
           if (stream && typeof stream.getVideoTracks === "function") {
             stream.getVideoTracks().forEach((track) => {
               silenceTrack(track);
@@ -69,7 +101,13 @@ PAGE_OBSERVER_JS = r"""
                 try {
                   stream.removeTrack(track);
                   if (typeof track.stop === "function") track.stop();
-                  stream.addTrack(blank);
+                  if (!isMeetHost) {
+                    stream.addTrack(blank);
+                  }
+                } catch (err) {}
+              } else if (typeof track.stop === "function") {
+                try {
+                  track.stop();
                 } catch (err) {}
               }
             });
@@ -90,7 +128,38 @@ PAGE_OBSERVER_JS = r"""
 
   function chatRoot() {
     return document.querySelector("[data-ba-chat-log]")
-      || document.querySelector('[aria-live="polite"]');
+      || document.querySelector('[jsname="xySENc"]')
+      || document.querySelector('.Ge9Kpc[aria-live="polite"]')
+      || document.querySelector('[aria-live="polite"]:not([data-mdc-dom-announce])');
+  }
+
+  function extractChatSender(group) {
+    if (!group) return "";
+    if (group.classList && group.classList.contains("ydIQ1d")) {
+      return "You";
+    }
+    let sender = (group.getAttribute("data-sender-name") || "").trim();
+    if (sender) return sender;
+    const badge = group.querySelector(".poVWob, .yt1Zbd, .zWGUib");
+    if (badge) {
+      sender = (badge.innerText || "").trim();
+      if (sender) return sender;
+    }
+    const header = group.querySelector(".HNucUd");
+    if (header) {
+      const clone = header.cloneNode(true);
+      clone.querySelectorAll(".MuzmKe, [jsname='biJjHb']").forEach((el) => el.remove());
+      const cleaned = (clone.innerText || "")
+        .split("\n")
+        .map((s) => s.trim())
+        .filter((s) => s && !/^\d{1,2}:\d{2}(\s*[AP]M)?$/i.test(s))
+        .join(" ");
+      if (cleaned) return cleaned;
+      if (header.querySelector(".MuzmKe, [jsname='biJjHb']")) {
+        return "You";
+      }
+    }
+    return "";
   }
 
   function chatNodes() {
@@ -107,25 +176,61 @@ PAGE_OBSERVER_JS = r"""
       });
       return;
     }
-    const sel = "[data-message-id], [data-message-text], .oIy2qc, [jsname='dTKtvb']";
-    document.querySelectorAll(sel).forEach((node) => {
-      if (!node.dataset.baChatId) {
-        node.dataset.baChatId = String(++nextChatId);
+    const root = chatRoot() || document;
+    let nodes = Array.from(root.querySelectorAll("[jsname='dTKtvb']"));
+    if (nodes.length === 0) {
+      nodes = Array.from(root.querySelectorAll("[data-message-text], .oIy2qc"));
+    }
+    if (nodes.length === 0) {
+      nodes = Array.from(
+        root.querySelectorAll("[data-message-id]:not(button):not([role='button'])")
+      );
+    }
+    const now = Date.now();
+    nodes.forEach((node) => {
+      const textTarget =
+        node.getAttribute && node.getAttribute("jsname") === "dTKtvb"
+          ? node
+          : node.querySelector
+          ? node.querySelector("[jsname='dTKtvb']") || node
+          : node;
+      const wrapper =
+        (textTarget.closest &&
+          textTarget.closest("[data-message-id], .RLrADb, .Be7nke")) ||
+        textTarget;
+      const idEl =
+        wrapper.getAttribute && wrapper.getAttribute("data-message-id")
+          ? wrapper
+          : wrapper.querySelector
+          ? wrapper.querySelector("[data-message-id]")
+          : null;
+      const msgId =
+        (idEl && idEl.getAttribute && idEl.getAttribute("data-message-id")) || "";
+      if (!wrapper.dataset.baChatId) {
+        wrapper.dataset.baChatId = String(++nextChatId);
       }
-      const id = node.getAttribute("data-message-id") || node.dataset.baChatId;
-      if (seenChat.has(id)) return;
-      const text = (node.getAttribute("data-message-text") || node.innerText || "").trim();
+      const localId = wrapper.dataset.baChatId;
+      if (seenChat.has(localId) || (msgId && seenChat.has(msgId))) {
+        seenChat.add(localId);
+        if (msgId) seenChat.add(msgId);
+        return;
+      }
+      const text = (
+        textTarget.getAttribute("data-message-text") ||
+        textTarget.innerText ||
+        ""
+      ).trim();
       if (!text) return;
-      seenChat.add(id);
-      const group = node.closest("[data-sender-name], .Ss4fHf, .GDhqjd");
-      let sender = "";
-      if (group) {
-        sender = group.getAttribute("data-sender-name") || "";
-        if (!sender) {
-          const badge = group.querySelector(".HNucUd, .poVWob, .yt1Zbd");
-          if (badge) sender = (badge.innerText || "").trim();
-        }
+      seenChat.add(localId);
+      if (msgId) seenChat.add(msgId);
+      const group = textTarget.closest("[data-sender-name], .Ss4fHf, .GDhqjd");
+      const sender = extractChatSender(group);
+      const dedupKey = `${sender}\0${text}`;
+      const prevAt = recentChatText.get(dedupKey);
+      if (prevAt !== undefined && now - prevAt < 2500) {
+        return;
       }
+      recentChatText.set(dedupKey, now);
       window.__baChatQueue.push({sender, text});
     });
   }
@@ -217,8 +322,10 @@ PAGE_OBSERVER_JS = r"""
     attachCaptions();
   }
 
+  window.__baHasChatRoot = () => Boolean(chatRoot());
   window.__baDrainChat = () => {
     scan();
+    chatNodes();
     const queued = window.__baChatQueue.slice();
     window.__baChatQueue = [];
     return queued;
@@ -351,9 +458,16 @@ REJECT_INCOMING_VIDEO_JS = (
             track.enabled = false;
           });
           const audio = typeof value.getAudioTracks === "function" ? value.getAudioTracks() : [];
+          const isMeet =
+            typeof window !== "undefined" &&
+            window.location &&
+            window.location.hostname === "meet.google.com";
           stripping = true;
           try {
-            desc.set.call(this, audio.length ? new MediaStream(audio) : null);
+            desc.set.call(
+              this,
+              audio.length ? new MediaStream(audio) : isMeet ? new MediaStream() : null
+            );
           } finally {
             stripping = false;
           }

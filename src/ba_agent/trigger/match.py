@@ -12,6 +12,21 @@ _ACCEPTED = (
     ("hi", "ba"),
     ("okay", "ba"),
     ("ok", "ba"),
+    ("hello", "ba"),
+    ("yo", "ba"),
+    ("a", "ba"),
+    ("eh", "ba"),
+    ("ay", "ba"),
+    ("hey", "va"),
+    ("hey", "pa"),
+    ("hey", "via"),
+    ("hey", "bia"),
+    ("hey", "techsol", "ba"),
+    ("techsol", "ba"),
+    ("hey", "ba", "assistant"),
+    ("ba", "assistant"),
+    ("aba",),
+    ("heyba",),
     ("@ba",),
 )
 _LOOKALIKES = (
@@ -22,7 +37,7 @@ _LOOKALIKES = (
     ("the", "ba", "team"),
     ("bae",),
 )
-_GREETINGS = ("hey", "hi", "ok", "okay")
+_GREETINGS = ("hey", "hi", "ok", "okay", "hello", "yo")
 
 
 @dataclass(frozen=True)
@@ -48,11 +63,11 @@ def match_wake(
         parts = tuple(part for part in phrase.lower().split() if part)
         if parts and parts not in accepted:
             accepted.append(parts)
+    if _find_phrase(tokens, _LOOKALIKES) is not None:
+        return None
     exact = _find_phrase(tokens, accepted)
     if exact is not None:
         return _match_from(raw_tokens, items, exact)
-    if _find_phrase(tokens, _LOOKALIKES) is not None:
-        return None
     if not fuzzy:
         return None
     fuzzy_hit = _fuzzy_phrase(tokens, accepted, threshold)
@@ -62,8 +77,7 @@ def match_wake(
 
 
 def _find_phrase(tokens: list[str], phrases: list[tuple[str, ...]] | tuple[tuple[str, ...], ...]):
-    limit = min(3, len(tokens))
-    for start in range(limit):
+    for start in range(len(tokens)):
         for phrase in phrases:
             end = start + len(phrase)
             if end <= len(tokens) and tuple(tokens[start:end]) == phrase:
@@ -73,8 +87,7 @@ def _find_phrase(tokens: list[str], phrases: list[tuple[str, ...]] | tuple[tuple
 
 def _fuzzy_phrase(tokens: list[str], accepted: list[tuple[str, ...]], threshold: int):
     best: tuple[int, int, str, float] | None = None
-    limit = min(3, len(tokens))
-    for start in range(limit):
+    for start in range(len(tokens)):
         if start + 1 >= len(tokens):
             continue
         span_tokens = tokens[start : start + 2]
@@ -118,7 +131,7 @@ def _collapse(raw_tokens: list[str]) -> list[tuple[str, int]]:
             index += 1
             continue
         nxt = norms[index + 1] if index + 1 < len(norms) else ""
-        if (norms[index], nxt) in {("bee", "a"), ("b", "a")}:
+        if (norms[index], nxt) in {("bee", "a"), ("b", "a"), ("be", "a"), ("b", "ay"), ("b", "eh")}:
             items.append(("ba", index + 2))
             index += 2
             continue

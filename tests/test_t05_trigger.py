@@ -91,3 +91,30 @@ def test_t05_u6_followup_window() -> None:
     detector.arm_followup("Sara", 0.0)
     late = detector.on_line("Sara", "the hybrid one", "speech", 21.0, caption_id="c")
     assert late == []
+
+
+def test_t05_u7_google_meet_asr_variants_and_mid_sentence() -> None:
+    cases = [
+        ("ABA what is a hybrid vehicle", "what is a hybrid vehicle"),
+        ("A BA, what is a hybrid?", "what is a hybrid"),
+        ("Hey B.A. what is a hybrid?", "what is a hybrid"),
+        ("Hey VA, what is a hybrid?", "what is a hybrid"),
+        ("So Ali, hey BA, what is a hybrid?", "what is a hybrid"),
+        ("Hey TechSol BA, save the meeting", "save the meeting"),
+    ]
+    for text, expected in cases:
+        hit = match_wake(text)
+        assert hit is not None, text
+        assert hit.question == expected
+
+
+def test_t05_u8_chat_and_one_word_commands_emit_immediately() -> None:
+    detector = TriggerDetector(pause_wait_s=5, dedup_window_s=3, followup_window_s=20)
+    chat_bare = detector.on_line("Sara", "Hey BA", "chat", 0.0)
+    assert len(chat_bare) == 1
+    assert chat_bare[0].question == ""
+    assert chat_bare[0].source == "chat"
+
+    speech_cmd = detector.on_line("Sara", "Hey BA, summarize", "speech", 4.0, caption_id="c1")
+    assert len(speech_cmd) == 1
+    assert speech_cmd[0].question == "summarize"

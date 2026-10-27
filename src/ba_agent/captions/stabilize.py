@@ -61,10 +61,11 @@ class Stabilizer:
             text = full_text
             if prev_committed is not None and prev_committed[0] == speaker:
                 prev_full = prev_committed[1]
-                if full_text.startswith(prev_full):
-                    text = full_text[len(prev_full) :].strip()
-                    if not text:
-                        continue
+                text = _strip_committed_prefix(prev_full, full_text)
+                if not text:
+                    self.committed[row.row_id] = (speaker, full_text)
+                    self.open.pop(row.row_id, None)
+                    continue
             current = self.open.get(row.row_id)
             if current is None:
                 committed.extend(self._commit_others(now))
@@ -75,9 +76,12 @@ class Stabilizer:
                 self.open[row.row_id] = _Open(row.row_id, speaker, text, now, now, full_text)
                 continue
             if text != current.text and not current.text.startswith(text):
+                prev_tokens = [_norm_word(w) for w in current.text.split()]
+                new_tokens = [_norm_word(w) for w in text.split()]
                 current.text = text
                 current.full_text = full_text
-                current.last_change = now
+                if new_tokens != prev_tokens:
+                    current.last_change = now
         if rows:
             for row_id in list(self.open):
                 if row_id not in seen:
@@ -100,11 +104,43 @@ class Stabilizer:
         return RawCaption(current.speaker, current.text, current.start_s, now, current.row_id)
 
 
+def _norm_word(word: str) -> str:
+    return "".join(ch for ch in word.lower() if ch.isalnum())
+
+
+def _strip_committed_prefix(prev_full: str, full_text: str) -> str:
+    prev_words = prev_full.split()
+    full_words = full_text.split()
+    prev_norm = [_norm_word(w) for w in prev_words if _norm_word(w)]
+    full_norm = [_norm_word(w) for w in full_words]
+    if prev_norm and len(full_words) >= len(prev_words):
+        prefix_norm = [_norm_word(w) for w in full_words[: len(prev_words)]]
+        if prefix_norm == [_norm_word(w) for w in prev_words]:
+            return " ".join(full_words[len(prev_words) :]).lstrip(" .,!?;:-").strip()
+    if full_text.startswith(prev_full):
+        return full_text[len(prev_full) :].lstrip(" .,!?;:-").strip()
+    for k in range(min(8, len(prev_words)), 1, -1):
+        tail = [_norm_word(w) for w in prev_words[-k:]]
+        if not all(tail):
+            continue
+        for idx in range(len(full_norm) - k, -1, -1):
+            if full_norm[idx : idx + k] == tail:
+                return " ".join(full_words[idx + k :]).lstrip(" .,!?;:-").strip()
+    if len(prev_words) >= 3 and len(full_words) >= len(prev_words):
+        p_norm = [_norm_word(w) for w in prev_words]
+        matches = sum(
+            1 for a, b in zip(p_norm, full_norm[: len(prev_words)]) if a and a == b
+        )
+        if matches / len(prev_words) >= 0.75:
+            return " ".join(full_words[len(prev_words) :]).lstrip(" .,!?;:-").strip()
+    return full_text
+
+
 def _same_utterance(previous: str, new: str) -> bool:
     if new.startswith(previous) or previous.startswith(new):
         return True
-    prev_words = previous.lower().split()
-    new_words = new.lower().split()
+    prev_words = [_norm_word(w) for w in previous.split() if _norm_word(w)]
+    new_words = [_norm_word(w) for w in new.split() if _norm_word(w)]
     if prev_words and new_words and prev_words[0] == new_words[0]:
         return True
     return False

@@ -10,6 +10,26 @@ from rapidfuzz import fuzz
 from ba_agent.models import TriggerEvent
 from ba_agent.trigger.match import match_wake
 
+_IMMEDIATE_ONE_WORD = {
+    "leave",
+    "exit",
+    "bye",
+    "quit",
+    "save",
+    "sync",
+    "summarize",
+    "summary",
+    "recap",
+    "notes",
+    "tasks",
+    "actions",
+    "status",
+    "help",
+    "hello",
+    "hi",
+    "hey",
+}
+
 
 @dataclass
 class _Pending:
@@ -95,13 +115,19 @@ class TriggerDetector:
             return events
         match = match_wake(
             text,
-            fuzzy=self.fuzzy and source != "chat",
+            fuzzy=self.fuzzy,
             threshold=self.fuzzy_threshold,
             extra_phrases=self.extra_phrases,
         )
         if match is None:
             return events
-        if len(match.question.split()) < 2:
+        words = match.question.split()
+        single_token = words[0].lower().strip(".,!?;:") if len(words) == 1 else ""
+        if (
+            len(words) < 2
+            and source != "chat"
+            and single_token not in _IMMEDIATE_ONE_WORD
+        ):
             self.pending = _Pending(speaker, match.question, source, t, caption_id)
             return events
         if self._duplicate(speaker, match.question, t):
@@ -112,7 +138,7 @@ class TriggerDetector:
     def _merge(self, pending, speaker, text, source, t, caption_id) -> list[TriggerEvent]:
         match = match_wake(
             text,
-            fuzzy=self.fuzzy and source != "chat",
+            fuzzy=self.fuzzy,
             threshold=self.fuzzy_threshold,
             extra_phrases=self.extra_phrases,
         )
@@ -130,7 +156,14 @@ class TriggerDetector:
             return []
         self.pending = None
         return [
-            self._emit("", pending.speaker, pending.source, t, pending.caption_id, followup=False)
+            self._emit(
+                pending.fragment,
+                pending.speaker,
+                pending.source,
+                t,
+                pending.caption_id,
+                followup=False,
+            )
         ]
 
     def _duplicate(self, speaker: str, question: str, t: float) -> bool:

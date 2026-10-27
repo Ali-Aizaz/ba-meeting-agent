@@ -251,3 +251,34 @@ async def test_t12_function_call_create_task_and_search_knowledge() -> None:
     assert created[0].owner == "Ali"
     assert poster.posts[-1][0] == "✓ Task added: Ali — cost sheet — Fri"
     assert poster.posts[-1][1] is PostReason.CONFIRMATION
+
+
+@pytest.mark.asyncio
+async def test_t12_llm_failure_fallback_answers_knowledge_digest_and_tasks() -> None:
+    created = []
+
+    async def create_task(record):
+        created.append(record)
+        return TaskWrite(True, "✓ Task added: Ali — cost sheet — Fri", page_id="p1", key=record.key)
+
+    class FailingLLM:
+        async def respond(self, *args, **kwargs):
+            raise RuntimeError("401 Invalid API Key")
+
+    async def search_cars(query: str) -> WebResult:
+        raise RuntimeError("401 Invalid API Key")
+
+    agent, poster, _ = _agent("unused", search_cars)
+    agent.llm = FailingLLM()
+    agent.create_task = create_task
+
+    await agent.handle(_event("what is a hybrid?", trigger_id="t_fb_kb"))
+    assert "(src: hybrid.md)" in poster.posts[-1][0]
+
+    await agent.handle(_event("what did Sara say?", trigger_id="t_fb_digest"))
+    assert "Sara said the budget is locked" in poster.posts[-1][0]
+
+    await agent.handle(_event("Ali, please finish the cost sheet by Friday", trigger_id="t_fb_task"))
+    assert len(created) == 1
+    assert created[0].owner == "Ali"
+    assert poster.posts[-1][1] is PostReason.CONFIRMATION

@@ -120,8 +120,8 @@ class NotionService:
                 self.schema,
                 title=title,
                 day=day,
-                summary="",
-                transcript_note="",
+                summary="Meeting in progress…",
+                transcript_note="Waiting for captions…",
             ),
         }
         created = await self._request("POST", "/pages", payload)

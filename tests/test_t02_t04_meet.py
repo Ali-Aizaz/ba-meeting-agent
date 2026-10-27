@@ -98,6 +98,32 @@ def test_t03_same_row_id_subsequent_sentences_strip_committed_prefix() -> None:
     ]
 
 
+def test_t03_repunctuated_cumulative_row_strips_prefix_and_ignores_punctuation_only() -> None:
+    stabilizer = Stabilizer(stable_ms=800)
+    # First utterance committed without trailing period.
+    f1 = _region(_row("1", "Ali", "We need to review the spec"))
+    lines = []
+    lines += stabilizer.push_frame(parse_caption_html(f1), 0.0)
+    lines += stabilizer.push_frame(parse_caption_html(f1), 0.9)
+    assert [(line.speaker, line.text) for line in lines] == [
+        ("Ali", "We need to review the spec"),
+    ]
+    # Google Meet adds a period to the committed sentence — should not emit "."
+    f1_punct = _region(_row("1", "Ali", "We need to review the spec."))
+    lines += stabilizer.push_frame(parse_caption_html(f1_punct), 1.1)
+    lines += stabilizer.push_frame(parse_caption_html(f1_punct), 2.0)
+    assert len(lines) == 1
+
+    # Next sentence appended after re-punctuated prefix.
+    f2 = _region(_row("1", "Ali", "We need to review the spec. Hey, BA, what is a hybrid?"))
+    lines += stabilizer.push_frame(parse_caption_html(f2), 2.2)
+    lines += stabilizer.push_frame(parse_caption_html(f2), 3.1)
+    assert [(line.speaker, line.text) for line in lines] == [
+        ("Ali", "We need to review the spec"),
+        ("Ali", "Hey, BA, what is a hybrid?"),
+    ]
+
+
 
 def test_t03_u2_meeting_clock() -> None:
     assert format_meeting_time(0) == "[00:00]"

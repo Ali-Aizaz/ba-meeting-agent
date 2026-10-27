@@ -232,6 +232,7 @@ async def _run_single_meeting(
                 status.stage = "in_call"
                 status.last_error = ""
                 status.captions_enabled = await adapter.enable_captions()
+                await adapter.ensure_chat_open()
                 if notion and notion.configured and not notion.summary_url:
                     title = f"TechSol BA {store.meeting_id}"
                     notes_url = await notion.ensure_summary_page(title)
@@ -356,9 +357,35 @@ async def _loops(
             for message in await adapter.collect_chat():
                 if message.is_self:
                     continue
+                speaker = normalize_speaker(message.sender, aliases)
+                if is_bot_speaker(speaker, settings.meeting.bot_name):
+                    continue
+                text = message.text.strip()
+                if not text or text.startswith(settings.meeting.consent_message):
+                    continue
                 now = adapter.meeting_seconds()
-                for event in trigger.on_line(message.sender, message.text, "chat", now, None):
+                line = CaptionLine(
+                    id=uuid.uuid4().hex,
+                    meeting_id=store.meeting_id,
+                    speaker=speaker,
+                    speaker_raw=message.sender,
+                    start_s=now,
+                    end_s=now,
+                    wall_time=datetime.now(UTC),
+                    text=text,
+                )
+                recent = store.last(3)
+                if not any(r.speaker == speaker and r.text == text for r in recent):
+                    store.add_caption(line)
+                    if notes_dirty is not None:
+                        notes_dirty.set()
+                events = trigger.on_line(speaker, text, "chat", now, line.id)
+                if addressed_caption_ids is not None and (events or is_addressed_line(text)):
+                    addressed_caption_ids.add(line.id)
+                for event in events:
                     trigger_queue.put_nowait(event)
+                if not events and not is_addressed_line(text):
+                    extractor.note(line)
             await asyncio.sleep(0.3)
 
     async def ticks() -> None:
