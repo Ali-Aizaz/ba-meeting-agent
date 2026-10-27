@@ -30,7 +30,7 @@ const STOP_WAIT_TIMEOUT_MS = 10_000;
 const STOP_POLL_INTERVAL_MS = 500;
 const STORAGE_MEET_URL_KEY = "meet_url";
 const MEET_HOST = ["meet", "google", "com"].join(".");
-const MEET_CODE_PATH = /^\/([a-z]{3}-[a-z]{4}-[a-z]{3})(?:$|[/?#])/i;
+const MEET_CODE_PATH = /^(?:\/_?meet)?\/([a-z]{3}-[a-z]{4}-[a-z]{3})(?:$|[/?#])/i;
 
 const CORS_HEADERS: Record<string, string> = {
   "access-control-allow-origin": "*",

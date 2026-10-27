@@ -7,7 +7,7 @@ const DEFAULT_SETTINGS = {
   botName: "TechSol BA",
 };
 
-const MEET_CODE_RE = /^\/([a-z]{3}-[a-z]{4}-[a-z]{3})(?:$|[/?#])/i;
+const MEET_CODE_RE = /^(?:\/_?meet)?\/([a-z]{3}-[a-z]{4}-[a-z]{3})(?:$|[/?#])/i;
 const DEDUP_WINDOW_MS = 3 * 60 * 60 * 1000; // 3 hours (matches container sleepAfter)
 const inFlightCodes = new Set();
 

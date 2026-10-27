@@ -1,5 +1,5 @@
 (() => {
-  const MEET_CODE_RE = /^\/([a-z]{3}-[a-z]{4}-[a-z]{3})(?:$|[/?#])/i;
+  const MEET_CODE_RE = /^(?:\/_?meet)?\/([a-z]{3}-[a-z]{4}-[a-z]{3})(?:$|[/?#])/i;
   let lastNotifiedOpenCode = null;
   let lastNotifiedJoinedCode = null;
   let toastTimeout = null;

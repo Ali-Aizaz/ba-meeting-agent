@@ -144,8 +144,11 @@ def test_t15_chrome_extension_manifest_and_scripts_are_valid() -> None:
     for filename in ("background.js", "content.js", "popup.html", "popup.js"):
         assert (ext_dir / filename).is_file()
     bg_text = (ext_dir / "background.js").read_text(encoding="utf-8")
+    content_text = (ext_dir / "content.js").read_text(encoding="utf-8")
     assert "/join" in bg_text
     assert "MEET_DETECTED" in bg_text
+    assert "(?:\\/_?meet)?" in bg_text
+    assert "(?:\\/_?meet)?" in content_text
 
 
 def test_t15_entrypoint_forwards_stop_signals_to_python() -> None:
