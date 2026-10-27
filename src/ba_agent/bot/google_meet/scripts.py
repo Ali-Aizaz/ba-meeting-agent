@@ -222,7 +222,7 @@ REJECT_INCOMING_VIDEO_JS = (
   }
 
   const Proto = window.RTCPeerConnection && window.RTCPeerConnection.prototype;
-  if (Proto && !Proto.__baVideoOff) {
+  if (Proto && !Proto.__baVideoOff && window.location.hostname !== "meet.google.com") {
     Proto.__baVideoOff = true;
     const origLocal = Proto.setLocalDescription;
     Proto.setLocalDescription = function (description) {

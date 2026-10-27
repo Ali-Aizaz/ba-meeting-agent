@@ -90,6 +90,7 @@ class GoogleMeetAdapter:
         self._context = await self._playwright.chromium.launch_persistent_context(
             user_data_dir=str(self.profile_dir),
             headless=self.settings.browser.headless,
+            ignore_default_args=["--enable-automation"],
             args=args,
             viewport={"width": 1280, "height": 720},
         )
