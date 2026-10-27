@@ -11,6 +11,10 @@ PAGE_OBSERVER_JS = r"""
   let nextChatId = 0;
 
   try {
+    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+  } catch (err) {}
+
+  try {
     if (navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === "function") {
       const origGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
       navigator.mediaDevices.getUserMedia = function () {

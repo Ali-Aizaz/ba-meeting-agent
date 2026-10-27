@@ -79,6 +79,7 @@ class GoogleMeetAdapter:
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         self._playwright = await async_playwright().start()
         args = [
+            "--disable-blink-features=AutomationControlled",
             "--use-fake-ui-for-media-stream",
             "--use-fake-device-for-media-stream",
             "--autoplay-policy=no-user-gesture-required",
@@ -305,11 +306,6 @@ class GoogleMeetAdapter:
     async def _wait_for_prejoin(self) -> None:
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
-            for label in JOIN_BUTTONS:
-                if await self.page.get_by_role("button", name=label).count():
-                    return
-            if await self.page.get_by_label(NAME_LABEL).count():
-                return
             for dismiss in ("Continue without microphone and camera", "Dismiss", "Got it"):
                 btn = self.page.get_by_role("button", name=dismiss)
                 if await btn.count():
@@ -317,6 +313,11 @@ class GoogleMeetAdapter:
                         await btn.first.click(timeout=500)
                     except Exception:
                         pass
+            for label in JOIN_BUTTONS:
+                if await self.page.get_by_role("button", name=label).count():
+                    return
+            if await self.page.get_by_label(NAME_LABEL).count():
+                return
             await asyncio.sleep(0.25)
 
     async def _mute(self) -> None:
