@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from ba_agent.memory.store import MeetingStore
 from ba_agent.models import CaptionLine, TaskRecord
 from ba_agent.tasks_extract.extractor import dedup_key
+
+UTC = timezone.utc
 
 
 def _line(index: int, text: str, speaker: str = "Sara") -> CaptionLine:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import date, datetime, timezone
 
 import pytest
 
@@ -18,6 +18,8 @@ from ba_agent.tasks_extract.extractor import (
     parse_task_command,
     tasks_from_model_json,
 )
+
+UTC = timezone.utc
 
 TODAY = date(2026, 10, 25)
 

@@ -10,8 +10,7 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 COPY config ./config
 COPY data/knowledge ./data/knowledge
-RUN pip install --no-cache-dir . \
-    && python -m playwright install chromium
+RUN pip install --no-cache-dir --retries 10 --timeout 60 "playwright==1.49.0" .
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh

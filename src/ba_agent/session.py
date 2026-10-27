@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from ba_agent.agent.loop import AgentLoop
 from ba_agent.bot.google_meet.adapter import GoogleMeetAdapter, should_leave_alone
@@ -35,6 +35,7 @@ from ba_agent.tasks_extract.extractor import (
 from ba_agent.trigger.detector import TriggerDetector
 
 logger = logging.getLogger("ba_agent.session")
+UTC = timezone.utc
 
 
 def _let_cleanup_finish() -> None:
@@ -42,8 +43,10 @@ def _let_cleanup_finish() -> None:
     task = asyncio.current_task()
     if task is None:
         return
-    while task.cancelling():
-        task.uncancel()
+    cancelling = getattr(task, "cancelling", None)
+    if cancelling is not None:
+        while cancelling():
+            task.uncancel()
 
 
 class SessionPoster:
@@ -77,89 +80,94 @@ async def run_join(settings: Settings, url: str) -> None:
     status = StatusState(store.meeting_id)
     server = start_status_server(status, settings.server.status_host, settings.server.status_port)
     notion = _build_notion(settings, store)
-    if notion and notion.configured:
-        await notion.verify()
-        if not notion.summary_url:
-            title = f"TechSol BA {store.meeting_id}"
-            notes_url = await notion.ensure_summary_page(title)
-            store.set_meta("summary_page_id", notion.summary_page_id)
-            store.set_meta("summary_url", notes_url)
-    llm = build_llm(settings)
-    knowledge = KnowledgeIndex(resolve_path(settings.knowledge.dir), settings.knowledge.min_score)
-    aliases = load_aliases(resolve_path(settings.speakers.aliases_file))
     adapter = GoogleMeetAdapter(settings)
     poster = SessionPoster(adapter, OutputGate(), store)
-    trigger = TriggerDetector(
-        pause_wait_s=settings.trigger.pause_wait_s,
-        dedup_window_s=settings.trigger.dedup_window_s,
-        followup_window_s=settings.trigger.followup_window_s,
-        fuzzy_threshold=settings.trigger.fuzzy_threshold,
-        extra_phrases=settings.trigger.phrases,
-    )
-
-    addressed_caption_ids: set[str] = set()
-
-    async def guarded_search(query: str) -> WebResult:
-        cleaned_query = " ".join(query.split()).lower()
-        lines = [
-            line.text
-            for line in store.last(500)
-            if line.id not in addressed_caption_ids
-            and not is_addressed_line(line.text)
-            and " ".join(line.text.split()).lower() != cleaned_query
-        ]
-        people = store.participants()
-        if not query_allowed(query, lines, people):
-            cleaned = strip_meeting_text(query, lines, people)
-            if not cleaned or not query_allowed(cleaned, lines, people):
-                logger.info("search_cars rejected because the query contained meeting text")
-                return WebResult()
-            query = cleaned
-        return await llm.search_cars(query)
-
-    async def create_task(record: TaskRecord):
-        if notion is None or not notion.schema.tasks_db:
-            return TaskWrite(False, task_failed(record.task), key=record.key)
-        result = await notion.create_task(record)
-        if result.created or result.page_id:
-            record.notion_page_id = result.page_id
-            record.key = result.key or record.key
-            store.add_task(record)
-        return result
-
-    async def save_meeting() -> str:
-        url = await _save(settings, store, notion, llm, announce=False, poster=poster)
-        if url:
-            store.set_meta("save_announced", "1")
-        return url
-
-    async def leave() -> None:
-        adapter.ended_event.set()
-
-    agent = AgentLoop(
-        knowledge=knowledge,
-        search_cars=guarded_search,
-        llm=llm,
-        create_task=create_task,
-        save_meeting=save_meeting,
-        post=poster.post,
-        trigger=trigger,
-        leave=leave,
-        digest=store.digest,
-        today=lambda: today_in(settings.meeting.timezone),
-        min_score=settings.knowledge.min_score,
-        timeout_s=settings.llm.timeout_s,
-    )
-    bus = EventBus()
-    pump = CaptionPump(adapter.drain_caption_frames, Stabilizer(settings.captions.stable_ms))
-    extractor = _Extractor(settings, llm, store, poster, notion)
-    consent_posted = store.get_meta("consent_posted") == "1"
+    llm = None
+    joined = False
     try:
+        if notion and notion.configured:
+            await notion.verify()
+        llm = build_llm(settings)
+        knowledge = KnowledgeIndex(
+            resolve_path(settings.knowledge.dir), settings.knowledge.min_score
+        )
+        aliases = load_aliases(resolve_path(settings.speakers.aliases_file))
+        trigger = TriggerDetector(
+            pause_wait_s=settings.trigger.pause_wait_s,
+            dedup_window_s=settings.trigger.dedup_window_s,
+            followup_window_s=settings.trigger.followup_window_s,
+            fuzzy_threshold=settings.trigger.fuzzy_threshold,
+            extra_phrases=settings.trigger.phrases,
+        )
+
+        addressed_caption_ids: set[str] = set()
+
+        async def guarded_search(query: str) -> WebResult:
+            cleaned_query = " ".join(query.split()).lower()
+            lines = [
+                line.text
+                for line in store.last(500)
+                if line.id not in addressed_caption_ids
+                and not is_addressed_line(line.text)
+                and " ".join(line.text.split()).lower() != cleaned_query
+            ]
+            people = store.participants()
+            if not query_allowed(query, lines, people):
+                cleaned = strip_meeting_text(query, lines, people)
+                if not cleaned or not query_allowed(cleaned, lines, people):
+                    logger.info("search_cars rejected because the query contained meeting text")
+                    return WebResult()
+                query = cleaned
+            return await llm.search_cars(query)
+
+        async def create_task(record: TaskRecord):
+            if notion is None or not notion.schema.tasks_db:
+                return TaskWrite(False, task_failed(record.task), key=record.key)
+            result = await notion.create_task(record)
+            if result.created or result.page_id:
+                record.notion_page_id = result.page_id
+                record.key = result.key or record.key
+                store.add_task(record)
+            return result
+
+        async def save_meeting() -> str:
+            url = await _save(settings, store, notion, llm, announce=False, poster=poster)
+            if url:
+                store.set_meta("save_announced", "1")
+            return url
+
+        async def leave() -> None:
+            adapter.ended_event.set()
+
+        agent = AgentLoop(
+            knowledge=knowledge,
+            search_cars=guarded_search,
+            llm=llm,
+            create_task=create_task,
+            save_meeting=save_meeting,
+            post=poster.post,
+            trigger=trigger,
+            leave=leave,
+            digest=store.digest,
+            today=lambda: today_in(settings.meeting.timezone),
+            min_score=settings.knowledge.min_score,
+            timeout_s=settings.llm.timeout_s,
+        )
+        bus = EventBus()
+        pump = CaptionPump(adapter.drain_caption_frames, Stabilizer(settings.captions.stable_ms))
+        extractor = _Extractor(settings, llm, store, poster, notion)
+        consent_posted = store.get_meta("consent_posted") == "1"
         attempts = 0
         while attempts < settings.browser.rejoin_limit:
             attempts += 1
             try:
                 await adapter.join(url)
+                joined = True
+                if notion and notion.configured and not notion.summary_url:
+                    title = f"TechSol BA {store.meeting_id}"
+                    notes_url = await notion.ensure_summary_page(title)
+                    store.set_meta("summary_page_id", notion.summary_page_id)
+                    store.set_meta("summary_url", notes_url)
                 if not consent_posted:
                     message = settings.meeting.consent_message
                     if notion and notion.summary_url:
@@ -196,12 +204,15 @@ async def run_join(settings: Settings, url: str) -> None:
     finally:
         _let_cleanup_finish()
         try:
-            current_sig = f"{store.count_captions()}:{len(store.tasks())}"
-            if (
-                store.get_meta("save_announced") != "1"
-                or store.get_meta("saved_sig") != current_sig
+            if llm is not None and (
+                joined or store.count_captions() > 0 or len(store.tasks()) > 0
             ):
-                await _save(settings, store, notion, llm, announce=True, poster=poster)
+                current_sig = f"{store.count_captions()}:{len(store.tasks())}"
+                if (
+                    store.get_meta("save_announced") != "1"
+                    or store.get_meta("saved_sig") != current_sig
+                ):
+                    await _save(settings, store, notion, llm, announce=True, poster=poster)
         except Exception:
             logger.exception("final save failed")
         store.set_meta("closed", "1")

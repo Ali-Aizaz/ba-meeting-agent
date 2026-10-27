@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from html.parser import HTMLParser
 
 from ba_agent.models import ChatMessage
+
+UTC = timezone.utc
 
 
 class _ChatHTMLParser(HTMLParser):

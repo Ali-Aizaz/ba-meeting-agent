@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "TechSol BA — Google Meet Auto-Join",
+  "version": "1.0.0",
+  "description": "Automatically starts the TechSol BA Cloudflare container when you join any Google Meet and optionally auto-admits the bot.",
+  "permissions": ["storage", "tabs"],
+  "host_permissions": [
+    "https://meet.google.com/*",
+    "https://*.workers.dev/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "TechSol BA Meet Auto-Join"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://meet.google.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -19,7 +19,6 @@ SKIP_SECRETS=0
 MEET_URL_ARG=""
 
 SECRET_KEYS=(
-  MEET_URL
   BA_LLM__API_KEY
   BA_NOTION__TOKEN
   BA_NOTION__DATABASES__SUMMARY
@@ -75,6 +74,7 @@ if [[ "$SKIP_SECRETS" -eq 0 ]]; then
 
   # Preserve caller-supplied environment overrides before sourcing .env.
   CALLER_MEET_URL="${MEET_URL:-}"
+  CALLER_WEBHOOK_SECRET="${BA_WEBHOOK_SECRET:-}"
   CALLER_LLM_KEY="${BA_LLM__API_KEY:-}"
   CALLER_OPENAI_KEY="${OPENAI_API_KEY:-}"
   CALLER_LLM_MODEL="${BA_LLM__MODEL:-}"
@@ -89,6 +89,7 @@ if [[ "$SKIP_SECRETS" -eq 0 ]]; then
   set +a
 
   [[ -n "$CALLER_MEET_URL" ]] && MEET_URL="$CALLER_MEET_URL"
+  [[ -n "$CALLER_WEBHOOK_SECRET" ]] && BA_WEBHOOK_SECRET="$CALLER_WEBHOOK_SECRET"
   [[ -n "$CALLER_LLM_KEY" ]] && BA_LLM__API_KEY="$CALLER_LLM_KEY"
   [[ -n "$CALLER_OPENAI_KEY" ]] && OPENAI_API_KEY="$CALLER_OPENAI_KEY"
   [[ -n "$CALLER_LLM_MODEL" ]] && BA_LLM__MODEL="$CALLER_LLM_MODEL"
@@ -98,6 +99,9 @@ if [[ "$SKIP_SECRETS" -eq 0 ]]; then
 
   if [[ -n "$MEET_URL_ARG" ]]; then
     MEET_URL="$MEET_URL_ARG"
+  elif [[ -z "$CALLER_MEET_URL" && "${MEET_URL:-}" == "https://meet.google.com/abc-defg-hij" ]]; then
+    # Ignore the README placeholder in .env unless explicitly passed via --meet-url or MEET_URL=.
+    MEET_URL=""
   fi
 
   # OPENAI_API_KEY is an allowed local fallback when BA_LLM__API_KEY is empty.
@@ -142,20 +146,24 @@ PY
     exit 1
   fi
 
-  case "$MEET_URL" in
-    https://meet.google.com/*) ;;
-    *)
-      echo "error: MEET_URL must look like https://meet.google.com/…" >&2
-      exit 1
-      ;;
-  esac
+  if [[ -n "${MEET_URL:-}" ]]; then
+    case "$MEET_URL" in
+      https://meet.google.com/*) ;;
+      *)
+        echo "error: MEET_URL must look like https://meet.google.com/…" >&2
+        exit 1
+        ;;
+    esac
+  fi
 
   tmp="$(mktemp)"
   cleanup() { rm -f "$tmp"; }
   trap cleanup EXIT
 
   # JSON bulk upload handles special characters in API tokens safely.
-  export MEET_URL BA_LLM__API_KEY BA_NOTION__TOKEN BA_NOTION__DATABASES__SUMMARY BA_NOTION__DATABASES__TASKS
+  export MEET_URL="${MEET_URL:-}"
+  export BA_WEBHOOK_SECRET="${BA_WEBHOOK_SECRET:-}"
+  export BA_LLM__API_KEY BA_NOTION__TOKEN BA_NOTION__DATABASES__SUMMARY BA_NOTION__DATABASES__TASKS
   export BA_LLM__MODEL="${BA_LLM__MODEL:-}"
   SECRET_KEYS_CSV="$(IFS=,; echo "${SECRET_KEYS[*]}")" \
     python3 - "$tmp" <<'PY'
@@ -169,29 +177,65 @@ for key in keys:
     if not value:
         raise SystemExit(f"error: empty secret after load: {key}")
     payload[key] = value
-model = (os.environ.get("BA_LLM__MODEL") or "").strip()
-if model:
-    payload["BA_LLM__MODEL"] = model
+for optional_key in ("MEET_URL", "BA_LLM__MODEL", "BA_WEBHOOK_SECRET"):
+    value = (os.environ.get(optional_key) or "").strip()
+    if value:
+        payload[optional_key] = value
 with open(path, "w", encoding="utf-8") as fh:
     json.dump(payload, fh)
 PY
 fi
 
+if npx wrangler whoami --install-skills=false 2>&1 | grep -q "You are not authenticated"; then
+  echo "→ logging in to Cloudflare (complete the prompt in your browser)"
+  npx wrangler login --install-skills=false
+fi
+
 if [[ "$SECRETS_ONLY" -eq 1 ]]; then
   echo "→ syncing Worker secrets"
-  npx wrangler secret bulk "$tmp"
+  npx wrangler secret bulk "$tmp" --install-skills=false
   echo "→ secrets updated"
   echo "Done (secrets only). Run without --secrets-only to deploy."
   exit 0
 fi
 
+if ! docker info >/dev/null 2>&1; then
+  if command -v colima >/dev/null 2>&1; then
+    echo "→ starting colima Docker runtime"
+    colima start
+  fi
+fi
+
+deploy_log="$(mktemp)"
+cleanup() { rm -f "${tmp:-}" "${deploy_log:-}"; }
+trap cleanup EXIT
+
 echo "→ wrangler deploy (first container image build can take several minutes)"
-npx wrangler deploy
+npx wrangler deploy --install-skills=false | tee "$deploy_log"
 
 if [[ "$SKIP_SECRETS" -eq 0 ]]; then
   echo "→ syncing Worker secrets"
-  npx wrangler secret bulk "$tmp"
+  npx wrangler secret bulk "$tmp" --install-skills=false
   echo "→ secrets updated"
+fi
+
+WORKER_URL="$(grep -Eo 'https://[a-zA-Z0-9._-]+\.workers\.dev' "$deploy_log" | tail -n 1 || true)"
+if [[ -n "$WORKER_URL" && -d "$ROOT/extension" ]]; then
+  python3 - "$ROOT/extension" "$WORKER_URL" <<'PY'
+import re, sys
+from pathlib import Path
+
+ext_dir = Path(sys.argv[1])
+worker_url = sys.argv[2]
+for name in ("background.js", "popup.js"):
+    path = ext_dir / name
+    if not path.is_file():
+        continue
+    text = path.read_text(encoding="utf-8")
+    updated = re.sub(r'workerUrl:\s*"[^"]*"', f'workerUrl: "{worker_url}"', text, count=1)
+    path.write_text(updated, encoding="utf-8")
+PY
+  echo "→ pre-configured Chrome extension with Worker URL: $WORKER_URL"
 fi
 
 echo

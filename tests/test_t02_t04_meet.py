@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -19,6 +19,8 @@ from ba_agent.events import EventBus
 from ba_agent.memory.store import MeetingStore
 from ba_agent.models import CaptionLine, PostReason
 from ba_agent.speakers import load_aliases, normalize_speaker
+
+UTC = timezone.utc
 
 CHAT_HTML = (FIXTURES / "chat_sample.html").read_text(encoding="utf-8")
 

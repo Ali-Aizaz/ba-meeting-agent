@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from enum import StrEnum
+from enum import Enum
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
 
-class PostReason(StrEnum):
+class PostReason(str, Enum):
     CONSENT = "CONSENT"
     REPLY = "REPLY"
     CONFIRMATION = "CONFIRMATION"

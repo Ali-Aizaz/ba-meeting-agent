@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -21,6 +21,8 @@ from ba_agent.models import (
 )
 from ba_agent.notion.client import TaskWrite
 from ba_agent.trigger.detector import TriggerDetector
+
+UTC = timezone.utc
 
 TRANSCRIPT = "UNIQUE_TRANSCRIPT_FIXTURE Sara said the budget is locked"
 QUESTION = "what's the current price of a Toyota RAV4 hybrid?"

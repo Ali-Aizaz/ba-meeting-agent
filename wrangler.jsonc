@@ -7,11 +7,18 @@
   "containers": [
     {
       "class_name": "BaContainer",
-      // One image and one size for every instance. standard-1 is 4 GiB memory.
-      "scheduling_policy": "default",
-      "image": "./Dockerfile",
-      "instance_type": "standard-1",
-      "max_instances": 1
+      // One image and one size: "instance_type": "standard-1", "max_instances": 1
+      "scheduling_policy": "durable_object",
+      "observability": {
+        "logs": {
+          "enabled": true
+        }
+      },
+      "images": {
+        "bot": {
+          "dockerfile": "./Dockerfile"
+        }
+      }
     }
   ],
   "durable_objects": {

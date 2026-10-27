@@ -104,6 +104,15 @@ npm run meet-url -- "https://meet.google.com/abc-defg-hij"
 7. After the meeting, let the 3 hour timer fire. Hitting `/status` keeps the instance billed.
 8. Google often blocks data-center browsers. Logs then show `Not admitted` or `Join button not found`. Do not add a proxy.
 
+### Auto-join every Google Meet (Chrome Extension + Cloudflare)
+
+Instead of updating `MEET_URL` before each call, the unpacked Chrome extension in [`extension/`](extension/) automatically sends `POST /join` with `{ "url": "https://meet.google.com/abc-defg-hij" }` to your Cloudflare Worker whenever you open or join a Google Meet, and can auto-admit **TechSol BA** when it knocks:
+
+1. Deploy your Worker once with `npm run deploy` (optional: set `BA_WEBHOOK_SECRET` in `.env` if you want bearer-token authentication on `POST /join`).
+2. In Chrome, open `chrome://extensions`, enable **Developer mode**, click **Load unpacked**, and select the [`extension/`](extension/) folder.
+3. Click the **TechSol BA** extension icon, paste your `https://ba-meeting-agent.<subdomain>.workers.dev` URL (and optional `BA_WEBHOOK_SECRET`), and click **Save Settings**.
+4. Whenever you open any `https://meet.google.com/xxx-xxxx-xxx` link, the extension automatically boots or switches the Cloudflare container to that meeting and auto-clicks **Admit** for **TechSol BA**.
+
 ## How to talk to it
 
 Say or type “Hey BA” near the start of the line. `hey bea`, `hi ba`, `ok ba`, and a chat `@ba` count. “Hey BA” on its own gets one question back: “Yes — what would you like me to do?”

@@ -73,6 +73,26 @@ def test_t15_status_responds_on_root_and_status() -> None:
         server.shutdown()
 
 
+def test_t15_status_handles_long_container_hostname(monkeypatch) -> None:
+    import socket
+
+    def fail_idna(_name: str = "") -> str:
+        raise UnicodeError("encoding with 'idna' codec failed (UnicodeError: label too long)")
+
+    monkeypatch.setattr("ba_agent.status._orig_getfqdn", fail_idna)
+    assert socket.getfqdn("0.0.0.0") == "0.0.0.0"
+    state = StatusState("m-cf")
+    server = start_status_server(state, "127.0.0.1", 0)
+    assert server is not None
+    port = server.server_address[1]
+    try:
+        response = httpx.get(f"http://127.0.0.1:{port}/status", timeout=2)
+        assert response.status_code == 200
+        assert response.json()["meeting_id"] == "m-cf"
+    finally:
+        server.shutdown()
+
+
 def test_t15_cloudflare_container_is_standard_1_without_secrets() -> None:
     text = (ROOT / "wrangler.jsonc").read_text(encoding="utf-8")
     assert '"instance_type": "standard-1"' in text
@@ -96,6 +116,9 @@ def test_t15_worker_sleeps_after_three_hours_and_reads_secrets_from_env() -> Non
     assert 'idFromName("meeting")' in text
     assert "portReadyTimeoutMS" in text
     assert "enableInternet = true" in text
+    assert 'pathname === "/join"' in text
+    assert "handleJoin" in text
+    assert "timingSafeEqual" in text
     for name in (
         "MEET_URL",
         "BA_LLM__API_KEY",
@@ -107,6 +130,22 @@ def test_t15_worker_sleeps_after_three_hours_and_reads_secrets_from_env() -> Non
     assert "sk-" not in text.lower()
     assert "ntn_" not in text
     assert "meet.google.com" not in text
+
+
+def test_t15_chrome_extension_manifest_and_scripts_are_valid() -> None:
+    import json
+
+    ext_dir = ROOT / "extension"
+    manifest = json.loads((ext_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["manifest_version"] == 3
+    assert "storage" in manifest["permissions"]
+    assert "https://meet.google.com/*" in manifest["host_permissions"]
+    assert manifest["background"]["service_worker"] == "background.js"
+    for filename in ("background.js", "content.js", "popup.html", "popup.js"):
+        assert (ext_dir / filename).is_file()
+    bg_text = (ext_dir / "background.js").read_text(encoding="utf-8")
+    assert "/join" in bg_text
+    assert "MEET_DETECTED" in bg_text
 
 
 def test_t15_entrypoint_forwards_stop_signals_to_python() -> None:

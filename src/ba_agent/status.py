@@ -3,8 +3,32 @@
 from __future__ import annotations
 
 import json
+import socket
+import socketserver
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+_orig_getfqdn = socket.getfqdn
+
+
+def _safe_getfqdn(name: str = "") -> str:
+    try:
+        return _orig_getfqdn(name)
+    except (OSError, UnicodeError):
+        return name or "localhost"
+
+
+socket.getfqdn = _safe_getfqdn
+
+
+class _StatusHTTPServer(ThreadingHTTPServer):
+    def server_bind(self) -> None:
+        # Avoid HTTPServer.server_bind's socket.getfqdn(host), which raises
+        # UnicodeError("label too long") on 64-char container hostnames.
+        socketserver.TCPServer.server_bind(self)
+        bind_host, bind_port = self.server_address[:2]
+        self.server_name = str(bind_host)
+        self.server_port = int(bind_port)
 
 
 class StatusState:
@@ -42,8 +66,8 @@ def start_status_server(state: StatusState, host: str, port: int) -> ThreadingHT
             return
 
     try:
-        server = ThreadingHTTPServer((host, port), Handler)
-    except OSError:
+        server = _StatusHTTPServer((host, port), Handler)
+    except (OSError, UnicodeError):
         return None
     thread = threading.Thread(target=server.serve_forever, name="ba-status", daemon=True)
     thread.start()
