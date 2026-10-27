@@ -12,6 +12,8 @@ LOBBY_TEXTS = (
     "Please wait until a meeting host brings you into the call",
     "Asking to be let in",
     "Wait until a meeting host brings you into the call",
+    "Getting ready",
+    "You'll be able to join in just a moment",
 )
 REJECTED_TEXTS = (
     "You can't join this video call",

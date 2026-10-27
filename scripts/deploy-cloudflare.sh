@@ -167,7 +167,9 @@ PY
   trap cleanup EXIT
 
   # Export authenticated Google cookies from local browser-profile if available.
-  if [[ -z "${BA_MEETING__GOOGLE_COOKIES_B64:-}" && -d "$ROOT/data/state/browser-profile" ]] && command -v uv >/dev/null 2>&1; then
+  if [[ -z "${BA_MEETING__GOOGLE_COOKIES_B64:-}" && -f "$ROOT/data/state/google_cookies.b64" ]]; then
+    BA_MEETING__GOOGLE_COOKIES_B64="$(cat "$ROOT/data/state/google_cookies.b64")"
+  elif [[ -z "${BA_MEETING__GOOGLE_COOKIES_B64:-}" && -d "$ROOT/data/state/browser-profile" ]] && command -v uv >/dev/null 2>&1; then
     BA_MEETING__GOOGLE_COOKIES_B64="$(uv run python - "$ROOT/data/state/browser-profile" 2>/dev/null <<'PY' || true
 import asyncio, base64, json, sys, zlib
 from pathlib import Path
@@ -185,25 +187,33 @@ async def main() -> None:
     async with async_playwright() as pw:
         ctx = await pw.chromium.launch_persistent_context(
             user_data_dir=str(profile),
-            headless=True,
+            headless=False,
             ignore_default_args=["--enable-automation"],
             args=["--disable-blink-features=AutomationControlled"],
         )
-        cookies = await ctx.cookies(["https://google.com", "https://accounts.google.com", "https://meet.google.com"])
+        cookies = await ctx.cookies()
         await ctx.close()
     names = {c.get("name") for c in cookies}
     if names & {"SID", "__Secure-1PSID", "__Secure-3PSID"}:
-        slim = [
-            {
-                "name": c["name"],
+        slim = []
+        for c in cookies:
+            name = c["name"]
+            entry = {
+                "name": name,
                 "value": c["value"],
-                "domain": c["domain"],
-                "path": c.get("path", "/"),
                 "secure": bool(c.get("secure", True)),
                 "httpOnly": bool(c.get("httpOnly", False)),
             }
-            for c in cookies
-        ]
+            if c.get("sameSite") in ("Strict", "Lax", "None"):
+                entry["sameSite"] = c["sameSite"]
+            if isinstance(c.get("expires"), (int, float)) and c["expires"] > 0:
+                entry["expires"] = c["expires"]
+            if name.startswith("__Host-"):
+                entry["url"] = f"https://{c['domain'].lstrip('.')}"
+            else:
+                entry["domain"] = c["domain"]
+                entry["path"] = c.get("path", "/")
+            slim.append(entry)
         raw = json.dumps(slim, separators=(",", ":")).encode("utf-8")
         print("z:" + base64.b64encode(zlib.compress(raw, 9)).decode("ascii"))
 

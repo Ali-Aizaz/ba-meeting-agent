@@ -116,6 +116,7 @@ async def run_join(settings: Settings, url: str) -> None:
                 break
             status.captions_enabled = False
             status.chat_enabled = False
+            status.stage = "idle"
             if not queued_url:
                 logger.info("browser kept alive and signed in; waiting for next meeting on /join")
                 await next_url_event.wait()
@@ -139,6 +140,8 @@ async def _run_single_meeting(
     status.meeting_id = store.meeting_id
     status.captions_enabled = False
     status.chat_enabled = False
+    status.stage = "joining"
+    status.last_error = ""
     notion = _build_notion(settings, store)
     poster = SessionPoster(adapter, OutputGate(), store)
     llm = None
@@ -222,6 +225,8 @@ async def _run_single_meeting(
             try:
                 await adapter.join(url)
                 joined = True
+                status.stage = "in_call"
+                status.last_error = ""
                 if notion and notion.configured and not notion.summary_url:
                     title = f"TechSol BA {store.meeting_id}"
                     notes_url = await notion.ensure_summary_page(title)
@@ -254,11 +259,14 @@ async def _run_single_meeting(
                     addressed_caption_ids,
                 )
                 break
-            except Exception:
+            except Exception as exc:
+                status.last_error = f"{type(exc).__name__}: {exc}"
+                status.stage = "retrying"
                 logger.exception("meeting attempt %s failed", attempts)
                 await adapter.close(force=False)
                 adapter.ended_event = asyncio.Event()
                 if attempts >= settings.browser.rejoin_limit:
+                    status.stage = "failed"
                     raise
     finally:
         _let_cleanup_finish()

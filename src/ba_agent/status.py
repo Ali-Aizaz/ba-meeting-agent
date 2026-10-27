@@ -43,14 +43,20 @@ class StatusState:
         self.meeting_id = meeting_id
         self.captions_enabled = False
         self.chat_enabled = False
+        self.stage = "idle"
+        self.last_error = ""
         self.on_join = on_join
 
     def as_dict(self) -> dict:
-        return {
+        payload: dict = {
             "meeting_id": self.meeting_id,
             "captions_enabled": self.captions_enabled,
             "chat_enabled": self.chat_enabled,
+            "stage": self.stage,
         }
+        if self.last_error:
+            payload["last_error"] = self.last_error
+        return payload
 
 
 def start_status_server(state: StatusState, host: str, port: int) -> ThreadingHTTPServer | None:

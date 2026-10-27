@@ -35,6 +35,8 @@ const PORT_READY_TIMEOUT_MS = 120_000;
 const STOP_WAIT_TIMEOUT_MS = 10_000;
 const STOP_POLL_INTERVAL_MS = 500;
 const STORAGE_MEET_URL_KEY = "meet_url";
+const STORAGE_ENV_SIG_KEY = "env_sig";
+const WORKER_BUILD_SIG = "v5";
 const MEET_HOST = ["meet", "google", "com"].join(".");
 const MEET_CODE_PATH = /^(?:\/_?meet)?\/([a-z]{3}-[a-z]{4}-[a-z]{3})(?:$|[/?#])/i;
 
@@ -220,9 +222,9 @@ export class BaContainer extends Container<Env> {
   }
 
   private async handleJoin(request: Request): Promise<Response> {
-    let body: { url?: unknown };
+    let body: { url?: unknown; restart?: unknown };
     try {
-      body = (await request.json()) as { url?: unknown };
+      body = (await request.json()) as { url?: unknown; restart?: unknown };
     } catch {
       return jsonResponse({ ok: false, error: "Invalid JSON body" }, 400);
     }
@@ -232,18 +234,24 @@ export class BaContainer extends Container<Env> {
       return jsonResponse({ ok: false, error: "Invalid Google Meet code URL" }, 400);
     }
 
+    const currentEnvSig = `${WORKER_BUILD_SIG}:${(this.env.BA_MEETING__GOOGLE_COOKIES_B64 || "").length}`;
+    const previousEnvSig = await this.ctx.storage.get<string>(STORAGE_ENV_SIG_KEY);
     const previousUrl = await this.ctx.storage.get<string>(STORAGE_MEET_URL_KEY);
     const state = await this.getState();
     const isRunning =
       Boolean(this.ctx.container?.running) &&
       (state.status === "running" || state.status === "healthy");
     const switchedMeeting = Boolean(previousUrl && previousUrl !== normalizedUrl && isRunning);
+    const needsRestart = Boolean(body.restart) || previousEnvSig !== currentEnvSig;
 
     await this.ctx.storage.put(STORAGE_MEET_URL_KEY, normalizedUrl);
+    await this.ctx.storage.put(STORAGE_ENV_SIG_KEY, currentEnvSig);
     const nextEnv = containerEnv(this.env, normalizedUrl);
     this.envVars = nextEnv;
 
-    if (isRunning) {
+    if (isRunning && needsRestart) {
+      await this.stopForNextMeeting();
+    } else if (isRunning) {
       try {
         const joinRes = await super.fetch(
           new Request("http://localhost/join", {
@@ -307,9 +315,8 @@ export class BaContainer extends Container<Env> {
     }
     const deadline = Date.now() + STOP_WAIT_TIMEOUT_MS;
     while (Date.now() < deadline) {
-      const current = await this.getState();
-      if (current.status !== "running" && current.status !== "healthy") {
-        return;
+      if (!this.ctx.container?.running) {
+        break;
       }
       await new Promise((resolve) => setTimeout(resolve, STOP_POLL_INTERVAL_MS));
     }
@@ -317,6 +324,10 @@ export class BaContainer extends Container<Env> {
       await this.destroy();
     } catch {
       // Container already exited.
+    }
+    const destroyDeadline = Date.now() + 5_000;
+    while (Date.now() < destroyDeadline && this.ctx.container?.running) {
+      await new Promise((resolve) => setTimeout(resolve, STOP_POLL_INTERVAL_MS));
     }
   }
 }

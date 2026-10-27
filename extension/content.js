@@ -122,6 +122,18 @@
     );
     if (botNames.length === 0) return;
 
+    function isAdmitButton(btn) {
+      const text = (btn.innerText || btn.textContent || "").trim().toLowerCase();
+      const aria = (btn.getAttribute("aria-label") || "").trim().toLowerCase();
+      return (
+        text === "admit" ||
+        text.endsWith("\nadmit") ||
+        aria === "admit" ||
+        aria.startsWith("admit ") ||
+        botNames.some((name) => text === `admit ${name}` || aria === `admit ${name}`)
+      );
+    }
+
     const dialogs = document.querySelectorAll(
       '[role="dialog"], [role="alertdialog"], [aria-modal="true"], [aria-live]',
     );
@@ -132,15 +144,22 @@
 
       const buttons = dialog.querySelectorAll('button, [role="button"]');
       for (const btn of buttons) {
-        const label = (
-          btn.innerText ||
-          btn.textContent ||
-          btn.getAttribute("aria-label") ||
-          ""
-        )
-          .trim()
-          .toLowerCase();
-        if (label === "admit" || botNames.some((name) => label === `admit ${name}`)) {
+        if (isAdmitButton(btn)) {
+          btn.click();
+          showToast(`TechSol BA: Auto-admitted ${cachedSettings.botName || "BA Assistant"} ✓`, "success");
+          return;
+        }
+      }
+    }
+
+    const allButtons = document.querySelectorAll('button, [role="button"]');
+    for (const btn of allButtons) {
+      if (isAdmitButton(btn)) {
+        const container =
+          btn.closest('[role="dialog"], [role="alertdialog"], [aria-modal="true"], [aria-live], [jscontroller]') ||
+          document.body;
+        const containerText = (container.innerText || container.textContent || "").toLowerCase();
+        if (botNames.some((name) => containerText.includes(name))) {
           btn.click();
           showToast(`TechSol BA: Auto-admitted ${cachedSettings.botName || "BA Assistant"} ✓`, "success");
           return;

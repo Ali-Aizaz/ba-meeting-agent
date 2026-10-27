@@ -197,16 +197,23 @@ class GoogleMeetAdapter:
         if not email or not password:
             return False
         login_url = (
-            "https://accounts.google.com/ServiceLogin?service=wise&passive=true&continue="
+            "https://accounts.google.com/ServiceLogin?service=wise&continue="
             + quote(continue_url, safe="")
         )
         logger.info("signing in to Google account %s", email)
         try:
             await self.page.goto(login_url, wait_until="domcontentloaded")
+            await asyncio.sleep(1.5)
+            chooser_item = self.page.locator(
+                f'[data-identifier="{email}"], [data-email="{email}"]'
+            )
+            if await chooser_item.count() > 0 and await chooser_item.first.is_visible():
+                await chooser_item.first.click()
+                await asyncio.sleep(1.5)
             email_input = self.page.locator("input#identifierId, input[type='email']")
             if await email_input.count() == 0:
                 try:
-                    await email_input.first.wait_for(state="visible", timeout=8000)
+                    await email_input.first.wait_for(state="visible", timeout=5000)
                 except Exception:
                     pass
             if await email_input.count() > 0 and await email_input.first.is_visible():
@@ -220,13 +227,30 @@ class GoogleMeetAdapter:
             if await pwd_input.count() > 0 and await pwd_input.first.is_visible():
                 await pwd_input.first.fill(password)
                 await pwd_input.first.press("Enter")
-            deadline = time.monotonic() + 20
+            deadline = time.monotonic() + 25
             while time.monotonic() < deadline:
-                if await self._has_google_auth_cookies():
+                cur_url = self.page.url or ""
+                if cur_url.startswith("https://meet.google.com/"):
                     await asyncio.sleep(1.0)
                     logger.info("google sign-in succeeded for %s", email)
                     return True
-                if "meet.google.com" in (self.page.url or ""):
+                not_now = self.page.locator(
+                    'button:has-text("Not now"), [role="button"]:has-text("Not now"), span:has-text("Not now")'
+                )
+                if await not_now.count() > 0:
+                    try:
+                        await not_now.first.click(timeout=2000)
+                        await asyncio.sleep(1.0)
+                        continue
+                    except Exception:
+                        pass
+                if (
+                    not cur_url.startswith("https://accounts.google.com/")
+                    and not cur_url.startswith("https://myaccount.google.com/")
+                    and cur_url.startswith("https://")
+                    and await self._has_google_auth_cookies()
+                ):
+                    logger.info("google sign-in succeeded for %s", email)
                     return True
                 await asyncio.sleep(0.5)
         except Exception:
@@ -248,7 +272,13 @@ class GoogleMeetAdapter:
         self._admitted_at = None
         await self._ensure_browser()
         await self._ensure_google_login(url)
-        await self.page.goto(url, wait_until="domcontentloaded")
+        if not (self.page.url or "").startswith("https://meet.google.com/"):
+            await self.page.goto(url, wait_until="domcontentloaded")
+        else:
+            try:
+                await self.page.goto(url, wait_until="domcontentloaded")
+            except Exception:
+                pass
         await self._wait_for_prejoin()
         email, password = self._google_credentials()
         if (
@@ -259,7 +289,8 @@ class GoogleMeetAdapter:
         ):
             # Cookies expired or were cleared; sign in and reload the meeting pre-join page.
             if await self._perform_google_login(url):
-                await self.page.goto(url, wait_until="domcontentloaded")
+                if not (self.page.url or "").startswith("https://meet.google.com/"):
+                    await self.page.goto(url, wait_until="domcontentloaded")
                 await self._wait_for_prejoin()
         await self._mute()
         await self._fill_name()
@@ -344,15 +375,35 @@ class GoogleMeetAdapter:
         await self.screenshot("captions-failed")
         return False
 
+    def _chat_box(self):
+        return self.page.get_by_role("textbox", name=CHAT_BOX).or_(
+            self.page.locator(
+                'textarea[aria-label*="Send a message" i], '
+                'textarea[placeholder*="Send a message" i], '
+                'input[aria-label*="Send a message" i], '
+                '[role="textbox"][aria-label*="Send a message" i], '
+                '[contenteditable="true"][aria-label*="Send a message" i]'
+            )
+        )
+
     async def post_chat(self, text: str, reason: PostReason) -> bool:
         if not isinstance(reason, PostReason):
             return False
         async with self._ui_lock:
-            box = self.page.get_by_role("textbox", name=CHAT_BOX)
+            box = self._chat_box()
             if await box.count() == 0:
                 opener = self.page.get_by_role("button", name=CHAT_BUTTON)
                 if await opener.count():
                     await opener.first.click()
+                    deadline = time.monotonic() + 5.0
+                    while time.monotonic() < deadline:
+                        if await box.count() > 0:
+                            try:
+                                if await box.first.is_visible() and await box.first.is_enabled():
+                                    break
+                            except Exception:
+                                break
+                        await asyncio.sleep(0.2)
             if await box.count() == 0:
                 self.chat_enabled = False
                 logger.info("chat_enabled: false")
@@ -504,12 +555,25 @@ class GoogleMeetAdapter:
         deadline = started + 25
         while time.monotonic() < deadline:
             await self._dismiss_prejoin_prompts()
-            has_join = False
+            name_field = self.page.get_by_label(NAME_LABEL)
+            if await name_field.count() > 0:
+                try:
+                    if await name_field.first.is_visible():
+                        return
+                except Exception:
+                    return
+            has_enabled_join = False
             for label in JOIN_BUTTONS:
-                if await self.page.get_by_role("button", name=label).count():
-                    has_join = True
-                    break
-            if has_join:
+                btn = self.page.get_by_role("button", name=label)
+                if await btn.count():
+                    try:
+                        if await btn.first.is_enabled():
+                            has_enabled_join = True
+                            break
+                    except Exception:
+                        has_enabled_join = True
+                        break
+            if has_enabled_join:
                 has_media = (
                     await self.page.get_by_role("button", name=MIC_ON_ACTION).count() > 0
                     or await self.page.get_by_role("button", name=MIC_OFF_STATE).count() > 0
@@ -545,6 +609,7 @@ class GoogleMeetAdapter:
 
     async def _click_join(self) -> None:
         await self._dismiss_prejoin_prompts()
+        await self._fill_name()
         for label in JOIN_BUTTONS:
             button = self.page.get_by_role("button", name=label)
             if await button.count():
@@ -576,12 +641,10 @@ class GoogleMeetAdapter:
                     )
                     if has_captions_btn:
                         return True
-                    leave_btn = self.page.get_by_role("button", name=LEAVE_CALL)
-                    if await leave_btn.count() > 0 and await leave_btn.first.is_visible():
-                        is_real_meet = (self.page.url or "").startswith("https://meet.google.com/")
-                        if not is_real_meet or (
-                            time.monotonic() - started >= 3.0 and body_text.strip() != ""
-                        ):
+                    is_real_meet = (self.page.url or "").startswith("https://meet.google.com/")
+                    if not is_real_meet:
+                        leave_btn = self.page.get_by_role("button", name=LEAVE_CALL)
+                        if await leave_btn.count() > 0 and await leave_btn.first.is_visible():
                             return True
             except Exception:
                 pass
