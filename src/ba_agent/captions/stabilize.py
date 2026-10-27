@@ -29,6 +29,7 @@ class _Open:
     text: str
     start_s: float
     last_change: float
+    full_text: str = ""
 
 
 class Stabilizer:
@@ -37,7 +38,7 @@ class Stabilizer:
     def __init__(
         self,
         stable_ms: int = 800,
-        bot_names: tuple[str, ...] = ("techsol ba", "you"),
+        bot_names: tuple[str, ...] = ("techsol ba", "ba assistant", "you"),
     ) -> None:
         self.stable_s = stable_ms / 1000
         self.bot_names = bot_names
@@ -48,26 +49,34 @@ class Stabilizer:
         committed: list[RawCaption] = []
         seen: set[str] = set()
         for row in rows:
-            text = " ".join(row.text.split())
+            full_text = " ".join(row.text.split())
             speaker = row.speaker.strip()
             seen.add(row.row_id)
-            if not text or speaker.lower() in self.bot_names:
+            if not full_text or speaker.lower() in self.bot_names:
                 self.open.pop(row.row_id, None)
                 continue
-            if self.committed.get(row.row_id) == (speaker, text):
+            prev_committed = self.committed.get(row.row_id)
+            if prev_committed == (speaker, full_text):
                 continue
+            text = full_text
+            if prev_committed is not None and prev_committed[0] == speaker:
+                prev_full = prev_committed[1]
+                if full_text.startswith(prev_full):
+                    text = full_text[len(prev_full) :].strip()
+                    if not text:
+                        continue
             current = self.open.get(row.row_id)
             if current is None:
                 committed.extend(self._commit_others(now))
-                self.open[row.row_id] = _Open(row.row_id, speaker, text, now, now)
+                self.open[row.row_id] = _Open(row.row_id, speaker, text, now, now, full_text)
                 continue
             if speaker != current.speaker or not _same_utterance(current.text, text):
                 committed.append(self._commit(current, now))
-                self.open[row.row_id] = _Open(row.row_id, speaker, text, now, now)
+                self.open[row.row_id] = _Open(row.row_id, speaker, text, now, now, full_text)
                 continue
-            grown = text if len(text) >= len(current.text) else current.text
-            if grown != current.text:
-                current.text = grown
+            if text != current.text and not current.text.startswith(text):
+                current.text = text
+                current.full_text = full_text
                 current.last_change = now
         if rows:
             for row_id in list(self.open):
@@ -84,12 +93,21 @@ class Stabilizer:
 
     def _commit(self, current: _Open, now: float) -> RawCaption:
         self.open.pop(current.row_id, None)
-        self.committed[current.row_id] = (current.speaker, current.text)
+        self.committed[current.row_id] = (
+            current.speaker,
+            current.full_text or current.text,
+        )
         return RawCaption(current.speaker, current.text, current.start_s, now, current.row_id)
 
 
 def _same_utterance(previous: str, new: str) -> bool:
-    return new.startswith(previous) or previous.startswith(new)
+    if new.startswith(previous) or previous.startswith(new):
+        return True
+    prev_words = previous.lower().split()
+    new_words = new.lower().split()
+    if prev_words and new_words and prev_words[0] == new_words[0]:
+        return True
+    return False
 
 
 class _CaptionHTMLParser(HTMLParser):

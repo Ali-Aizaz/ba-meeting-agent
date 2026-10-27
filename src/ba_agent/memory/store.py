@@ -262,6 +262,15 @@ def open_meeting(path: Path, url: str) -> MeetingStore:
     store.set_meta("active_url", url)
     store.set_meta("active_meeting_id", store.meeting_id)
     store.set_meta("closed", "0")
+    for key in (
+        "summary_page_id",
+        "summary_url",
+        "consent_posted",
+        "saved",
+        "save_announced",
+        "saved_sig",
+    ):
+        store.set_meta(key, "")
     return store
 
 

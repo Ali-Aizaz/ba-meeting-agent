@@ -113,3 +113,39 @@ def test_t10_participants_order_wal_indexes_and_replies(tmp_path: Path) -> None:
     assert "Bot answer 6" in digest
     assert "Bot answer 0" not in digest
     store.close()
+
+
+def test_t10_open_meeting_resets_per_meeting_meta(tmp_path: Path) -> None:
+    from ba_agent.memory.store import open_meeting
+
+    db_path = tmp_path / "meeting.db"
+    url1 = "https://meet.google.com/aaa-bbbb-ccc"
+    url2 = "https://meet.google.com/ddd-eeee-fff"
+    store = open_meeting(db_path, url1)
+    first_id = store.meeting_id
+    store.set_meta("summary_page_id", "page-1")
+    store.set_meta("summary_url", "https://www.notion.so/page-1")
+    store.set_meta("consent_posted", "1")
+    store.set_meta("saved", "1")
+    store.set_meta("save_announced", "1")
+    store.set_meta("saved_sig", "1:0:abc")
+    store.close()
+
+    # Re-opening with the same URL while not closed resumes the active meeting (crash recovery).
+    resumed = open_meeting(db_path, url1)
+    assert resumed.meeting_id == first_id
+    assert resumed.get_meta("summary_page_id") == "page-1"
+    assert resumed.get_meta("summary_url") == "https://www.notion.so/page-1"
+    resumed.close()
+
+    # Opening a new meeting URL in a keep-alive container resets per-meeting meta keys.
+    fresh = open_meeting(db_path, url2)
+    assert fresh.meeting_id != first_id
+    assert fresh.get_meta("summary_page_id") == ""
+    assert fresh.get_meta("summary_url") == ""
+    assert fresh.get_meta("consent_posted") == ""
+    assert fresh.get_meta("saved") == ""
+    assert fresh.get_meta("save_announced") == ""
+    assert fresh.get_meta("saved_sig") == ""
+    fresh.close()
+

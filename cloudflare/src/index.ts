@@ -36,7 +36,7 @@ const STOP_WAIT_TIMEOUT_MS = 10_000;
 const STOP_POLL_INTERVAL_MS = 500;
 const STORAGE_MEET_URL_KEY = "meet_url";
 const STORAGE_ENV_SIG_KEY = "env_sig";
-const WORKER_BUILD_SIG = "v5";
+const WORKER_BUILD_SIG = "v6";
 const MEET_HOST = ["meet", "google", "com"].join(".");
 const MEET_CODE_PATH = /^(?:\/_?meet)?\/([a-z]{3}-[a-z]{4}-[a-z]{3})(?:$|[/?#])/i;
 

@@ -156,15 +156,35 @@ PAGE_OBSERVER_JS = r"""
         });
       });
     } else {
-      const blocks = root.querySelectorAll(".nMcdL, .TBMuR");
+      let blocks = Array.from(root.querySelectorAll(".nMcdL, .TBMuR"));
+      if (blocks.length === 0) {
+        blocks = Array.from(root.children).filter(
+          (el) =>
+            el.tagName === "DIV" &&
+            !el.querySelector('button[aria-label*="Jump" i]') &&
+            (el.innerText || "").trim().length > 0
+        );
+      }
       blocks.forEach((block) => {
         if (!block.dataset.baRowId) {
           block.dataset.baRowId = String(++nextRowId);
         }
         const speakerEl = block.querySelector(".NWpY1d, .KcIKyf, .zs7s8d");
         const textEl = block.querySelector(".ygicle, .VbkSUe, .bh44bd, .iTTPOb, .CNusmb");
-        const speaker = speakerEl ? (speakerEl.innerText || "").trim() : "";
-        const text = textEl ? (textEl.innerText || "").trim() : "";
+        let speaker = speakerEl ? (speakerEl.innerText || "").trim() : "";
+        let text = textEl ? (textEl.innerText || "").trim() : "";
+        if (!text && !speakerEl && !textEl) {
+          const lines = (block.innerText || "")
+            .split("\n")
+            .map((s) => s.trim())
+            .filter(Boolean);
+          if (lines.length >= 2) {
+            speaker = lines[0];
+            text = lines.slice(1).join(" ");
+          } else if (lines.length === 1) {
+            text = lines[0];
+          }
+        }
         if (text) {
           rows.push({
             row_id: block.dataset.baRowId,

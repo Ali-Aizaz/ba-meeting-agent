@@ -169,6 +169,61 @@ def apply_overheard(
     return records, []
 
 
+_OVERHEARD_PATTERNS = (
+    re.compile(
+        r"^(?P<owner>[A-Z][a-z]+)(?:,\s*|\s+)(?:please\s+|can\s+you\s+|could\s+you\s+|will\s+|should\s+|needs?\s+to\s+)(?P<body>.+)$",
+    ),
+    re.compile(
+        r"^(?:i'll|i\s+will|i\s+need\s+to|i\s+can)\s+(?P<body>.+)$",
+        re.I,
+    ),
+)
+
+
+def fallback_overheard_tasks(
+    line_text: str,
+    *,
+    said_by: str,
+    time: str,
+    today: date,
+) -> list[TaskRecord]:
+    """Rule-based fallback when the LLM call is unavailable."""
+    cleaned = line_text.strip().rstrip(".!?")
+    if not cleaned or is_addressed_line(cleaned):
+        return []
+    cmd = parse_task_command(cleaned, said_by=said_by, time=time, today=today)
+    if cmd is not None and cmd.task and cmd.owner and cmd.due is not None:
+        return [cmd]
+    for pattern in _OVERHEARD_PATTERNS:
+        match = pattern.match(cleaned)
+        if match is None:
+            continue
+        groups = match.groupdict()
+        owner = (groups.get("owner") or said_by or "").strip(" .,")
+        body = (groups.get("body") or "").strip(" .")
+        due_match = re.search(r"\s+(?:by|on|before|due)\s+(.+)$", body, re.I)
+        if due_match:
+            due_text = due_match.group(1).strip()
+            body = body[: due_match.start()].strip()
+        else:
+            due_text = body
+        due = parse_due(due_text, today=today)
+        if due is None or not body or not owner or owner.lower() == "unknown speaker":
+            continue
+        return [
+            TaskRecord(
+                task=body,
+                owner=owner,
+                due=due,
+                due_text=due_text,
+                said_by=said_by,
+                time=time,
+                key=dedup_key(body, owner),
+            )
+        ]
+    return []
+
+
 def extract_json(text: str) -> str:
     start = text.find("{")
     end = text.rfind("}")

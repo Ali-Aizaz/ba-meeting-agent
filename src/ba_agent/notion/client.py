@@ -221,7 +221,14 @@ class NotionService:
                 return self._task_cache.get(key)
             cursor = data.get("next_cursor")
 
-    async def save_meeting(self, summary: str, transcript: str, tasks: list[TaskRecord]) -> str:
+    async def save_meeting(
+        self,
+        summary: str,
+        transcript: str,
+        tasks: list[TaskRecord],
+        *,
+        append_children: bool = True,
+    ) -> str:
         if not self.schema.summary_db:
             raise StartupError("Notion summary database is not configured")
         day = datetime.now(ZoneInfo(self.timezone_name)).date()
@@ -240,21 +247,21 @@ class NotionService:
         )
         children = _transcript_toggle(transcript)
         if not self.summary_page_id:
-            created = await self._request(
-                "POST",
-                "/pages",
-                {"parent": self.summary_parent, "properties": properties, "children": children},
-            )
+            payload: dict = {"parent": self.summary_parent, "properties": properties}
+            if append_children:
+                payload["children"] = children
+            created = await self._request("POST", "/pages", payload)
             self.summary_page_id = created.get("id", "")
             self.summary_url = created.get("url", "")
-            self._transcript_appended = True
+            if append_children:
+                self._transcript_appended = True
             return self.summary_url
         await self._request(
             "PATCH",
             f"/pages/{self.summary_page_id}",
             {"properties": properties},
         )
-        if not self._transcript_appended:
+        if append_children and not self._transcript_appended:
             await self._request(
                 "PATCH",
                 f"/blocks/{self.summary_page_id}/children",

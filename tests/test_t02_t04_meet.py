@@ -72,6 +72,33 @@ def test_t03_u1_growing_caption_commits_once() -> None:
     ]
 
 
+def test_t03_same_row_id_subsequent_sentences_strip_committed_prefix() -> None:
+    stabilizer = Stabilizer(stable_ms=800)
+    f1 = _region(_row("1", "Ali", "We need to review the spec."))
+    # Pause > 0.8s commits the first sentence on row "1".
+    lines = []
+    lines += stabilizer.push_frame(parse_caption_html(f1), 0.0)
+    lines += stabilizer.push_frame(parse_caption_html(f1), 0.9)
+    assert [(line.speaker, line.text) for line in lines] == [
+        ("Ali", "We need to review the spec."),
+    ]
+
+    # Google Meet appends the next sentence to the same .nMcdL DOM block (row "1").
+    f2_partial = _region(_row("1", "Ali", "We need to review the spec. Sara will send"))
+    f2_full = _region(
+        _row("1", "Ali", "We need to review the spec. Sara will send the notes by Friday."),
+        _row("2", "BA Assistant", "I should be ignored"),
+    )
+    lines += stabilizer.push_frame(parse_caption_html(f2_partial), 1.2)
+    lines += stabilizer.push_frame(parse_caption_html(f2_full), 1.5)
+    lines += stabilizer.push_frame(parse_caption_html(f2_full), 2.4)
+    assert [(line.speaker, line.text) for line in lines] == [
+        ("Ali", "We need to review the spec."),
+        ("Ali", "Sara will send the notes by Friday."),
+    ]
+
+
+
 def test_t03_u2_meeting_clock() -> None:
     assert format_meeting_time(0) == "[00:00]"
     assert format_meeting_time(90) == "[01:30]"

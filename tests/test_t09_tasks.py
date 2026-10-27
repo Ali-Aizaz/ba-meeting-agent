@@ -220,3 +220,62 @@ async def test_t09_extractor_batches_and_skips_non_task_lines(tmp_path) -> None:
     assert notion.created[0].owner == "Ali"
     assert notion.created[0].time == "[00:04]"
     store.close()
+
+
+@pytest.mark.asyncio
+async def test_t09_extractor_falls_back_when_llm_fails(tmp_path) -> None:
+    settings = load_settings()
+    store = MeetingStore(tmp_path / "meeting.db", "m1")
+
+    class _FailingLLM:
+        async def respond(self, *args, **kwargs) -> LLMResponse:
+            raise RuntimeError("401 Unauthorized")
+
+    class _FakeNotionSchema:
+        tasks_db = "db_tasks"
+
+    class _FakeNotion:
+        schema = _FakeNotionSchema()
+        created: list = []
+
+        async def create_task(self, record):
+            from ba_agent.notion.client import TaskWrite
+
+            self.created.append(record)
+            return TaskWrite(
+                True,
+                f"✓ Task added: {record.owner} — {record.task}",
+                page_id="p1",
+                key=record.key,
+            )
+
+    class _FakePoster:
+        posted: list = []
+
+        async def post(self, text, reason, trigger_id=None):
+            self.posted.append((text, reason, trigger_id))
+            return True
+
+    notion = _FakeNotion()
+    poster = _FakePoster()
+    extractor = _Extractor(settings, _FailingLLM(), store, poster, notion)
+    extractor.note(
+        CaptionLine(
+            id="c1",
+            meeting_id="m1",
+            speaker="Sara",
+            speaker_raw="Sara",
+            start_s=10.0,
+            end_s=11.0,
+            wall_time=datetime(2026, 10, 25, tzinfo=UTC),
+            text="Ali will update the cost sheet by Friday.",
+        )
+    )
+    extractor.stop()
+    await extractor.run()
+    assert len(notion.created) == 1
+    assert notion.created[0].owner == "Ali"
+    assert "update the cost sheet" in notion.created[0].task
+    assert len(poster.posted) == 1
+    store.close()
+

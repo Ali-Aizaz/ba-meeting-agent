@@ -254,3 +254,70 @@ async def test_t11_task_cache_avoids_redundant_database_queries() -> None:
     query_calls = [call for call in fake.calls if call[1].endswith("/query")]
     assert len(query_calls) == 1
     await service.aclose()
+
+
+@pytest.mark.asyncio
+async def test_t11_live_save_without_children_then_final_save_with_llm_fallback(tmp_path) -> None:
+    from datetime import datetime, timezone
+    from ba_agent.memory.store import MeetingStore
+    from ba_agent.models import CaptionLine
+    from ba_agent.session import _save, _save_live
+
+    fake = _FakeNotion()
+    service = _service(fake)
+    await service.verify()
+    await service.ensure_summary_page("TechSol BA m1")
+
+    store = MeetingStore(tmp_path / "meeting.db", "m1")
+    store.add_caption(
+        CaptionLine(
+            id="c1",
+            meeting_id="m1",
+            speaker="Ali",
+            speaker_raw="Ali",
+            start_s=5.0,
+            end_s=6.0,
+            wall_time=datetime(2026, 10, 25, 12, 0, tzinfo=timezone.utc),
+            text="We decided to launch the beta on Friday.",
+        )
+    )
+
+    # Live save updates properties without appending children block yet.
+    await _save_live(store, service)
+    assert service._transcript_appended is False
+    child_patches = [
+        call
+        for call in fake.calls
+        if call[0] == "PATCH" and call[1].endswith(f"/blocks/{service.summary_page_id}/children")
+    ]
+    assert len(child_patches) == 0
+
+    class _FailingLLM:
+        async def respond(self, *args, **kwargs):
+            raise RuntimeError("OpenAI error")
+
+    class _FakePoster:
+        posted: list = []
+
+        async def post(self, text, reason, trigger_id=None):
+            self.posted.append((text, reason, trigger_id))
+            return True
+
+    poster = _FakePoster()
+    from ba_agent.config import load_settings
+
+    url = await _save(
+        load_settings(),
+        store,
+        service,
+        _FailingLLM(),
+        poster=poster,
+        announce=True,
+    )
+    assert url.startswith("https://www.notion.so/")
+    assert service._transcript_appended is True
+    assert store.get_meta("saved") == "1"
+    assert len(poster.posted) == 1
+    await service.aclose()
+    store.close()
+

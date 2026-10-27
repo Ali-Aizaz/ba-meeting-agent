@@ -30,6 +30,7 @@ from ba_agent.status import StatusState, start_status_server
 from ba_agent.tasks_extract.dates import today_in
 from ba_agent.tasks_extract.extractor import (
     apply_overheard,
+    fallback_overheard_tasks,
     is_addressed_line,
     might_contain_task,
 )
@@ -182,6 +183,8 @@ async def _run_single_meeting(
                 query = cleaned
             return await llm.search_cars(query)
 
+        notes_dirty = asyncio.Event()
+
         async def create_task(record: TaskRecord):
             if notion is None or not notion.schema.tasks_db:
                 return TaskWrite(False, task_failed(record.task), key=record.key)
@@ -190,6 +193,7 @@ async def _run_single_meeting(
                 record.notion_page_id = result.page_id
                 record.key = result.key or record.key
                 store.add_task(record)
+                notes_dirty.set()
             return result
 
         async def save_meeting() -> str:
@@ -217,7 +221,7 @@ async def _run_single_meeting(
         )
         bus = EventBus()
         pump = CaptionPump(adapter.drain_caption_frames, Stabilizer(settings.captions.stable_ms))
-        extractor = _Extractor(settings, llm, store, poster, notion)
+        extractor = _Extractor(settings, llm, store, poster, notion, on_change=notes_dirty.set)
         consent_posted = store.get_meta("consent_posted") == "1"
         attempts = 0
         while attempts < settings.browser.rejoin_limit:
@@ -227,6 +231,7 @@ async def _run_single_meeting(
                 joined = True
                 status.stage = "in_call"
                 status.last_error = ""
+                status.captions_enabled = await adapter.enable_captions()
                 if notion and notion.configured and not notion.summary_url:
                     title = f"TechSol BA {store.meeting_id}"
                     notes_url = await notion.ensure_summary_page(title)
@@ -236,10 +241,9 @@ async def _run_single_meeting(
                     message = settings.meeting.consent_message
                     if notion and notion.summary_url:
                         message = f"{message} Notes will be here: {notion.summary_url}"
-                    await poster.post(message, PostReason.CONSENT)
-                    consent_posted = True
-                    store.set_meta("consent_posted", "1")
-                status.captions_enabled = await adapter.enable_captions()
+                    if await poster.post(message, PostReason.CONSENT):
+                        consent_posted = True
+                        store.set_meta("consent_posted", "1")
                 status.chat_enabled = adapter.chat_enabled
                 logger.info(
                     "captions_enabled: %s chat_enabled: %s",
@@ -257,6 +261,8 @@ async def _run_single_meeting(
                     extractor,
                     bus,
                     addressed_caption_ids,
+                    notion=notion,
+                    notes_dirty=notes_dirty,
                 )
                 break
             except Exception as exc:
@@ -300,6 +306,9 @@ async def _loops(
     extractor,
     bus,
     addressed_caption_ids: set[str] | None = None,
+    *,
+    notion: NotionService | None = None,
+    notes_dirty: asyncio.Event | None = None,
 ) -> None:
     trigger_queue: asyncio.Queue[TriggerEvent | None] = asyncio.Queue()
 
@@ -318,6 +327,8 @@ async def _loops(
             text=raw.text,
         )
         store.add_caption(line)
+        if notes_dirty is not None:
+            notes_dirty.set()
         await bus.publish("caption_committed", line)
         events = trigger.on_line(speaker, raw.text, "speech", raw.start_s, line.id)
         if addressed_caption_ids is not None and (
@@ -374,6 +385,20 @@ async def _loops(
                 return
             await asyncio.sleep(1)
 
+    async def live_notes() -> None:
+        if notion is None or not notion.schema.summary_db or notes_dirty is None:
+            return
+        while not adapter.ended_event.is_set():
+            await notes_dirty.wait()
+            if adapter.ended_event.is_set():
+                return
+            await asyncio.sleep(1.5)
+            notes_dirty.clear()
+            try:
+                await _save_live(store, notion)
+            except Exception:
+                logger.warning("live notion notes sync failed", exc_info=True)
+
     poller_tasks = [
         asyncio.create_task(captions()),
         asyncio.create_task(chats()),
@@ -384,6 +409,8 @@ async def _loops(
         asyncio.create_task(replies()),
         asyncio.create_task(extractor.run()),
     ]
+    if notion is not None and notion.schema.summary_db and notes_dirty is not None:
+        poller_tasks.append(asyncio.create_task(live_notes()))
     try:
         await adapter.ended_event.wait()
     finally:
@@ -400,6 +427,23 @@ async def _loops(
             await asyncio.gather(*pending, return_exceptions=True)
 
 
+async def _save_live(store: MeetingStore, notion: NotionService) -> str:
+    if not notion.schema.summary_db:
+        return ""
+    lines = store.last(100000)
+    tasks = store.tasks()
+    if not lines and not tasks:
+        return notion.summary_url
+    transcript = "\n".join(
+        f"{format_meeting_time(line.start_s)} {line.speaker}: {line.text}" for line in lines
+    )
+    summary = _fallback_summary(transcript)
+    url = await notion.save_meeting(summary, transcript, tasks, append_children=False)
+    store.set_meta("summary_page_id", notion.summary_page_id)
+    store.set_meta("summary_url", url)
+    return url
+
+
 async def _save(settings, store, notion, llm, *, announce: bool, poster: SessionPoster) -> str:
     if notion is None or not notion.schema.summary_db:
         return ""
@@ -409,7 +453,7 @@ async def _save(settings, store, notion, llm, *, announce: bool, poster: Session
         f"{format_meeting_time(line.start_s)} {line.speaker}: {line.text}" for line in lines
     )
     summary = await _summarize(llm, transcript, settings.llm.summary_timeout_s)
-    url = await notion.save_meeting(summary, transcript, tasks)
+    url = await notion.save_meeting(summary, transcript, tasks, append_children=True)
     store.set_meta("summary_page_id", notion.summary_page_id)
     store.set_meta("summary_url", url)
     store.set_meta("saved", "1")
@@ -422,8 +466,27 @@ async def _save(settings, store, notion, llm, *, announce: bool, poster: Session
 
 async def _summarize(llm, transcript: str, timeout_s: float) -> str:
     prompt = read_prompt("summary.md") + "\n\n" + (transcript or "(empty transcript)")
-    response = await llm.respond(prompt, enable_web_search=False, timeout_s=timeout_s)
-    return response.text.strip() or "No summary."
+    try:
+        response = await llm.respond(prompt, enable_web_search=False, timeout_s=timeout_s)
+        text = response.text.strip()
+        if text:
+            return text
+    except Exception:
+        logger.warning("llm summarize failed; using extractive fallback", exc_info=True)
+    return _fallback_summary(transcript)
+
+
+def _fallback_summary(transcript: str) -> str:
+    cleaned = [line.strip() for line in transcript.splitlines() if line.strip()]
+    if not cleaned:
+        return "No summary."
+    snippets: list[str] = []
+    for line in cleaned[-6:]:
+        if line.startswith("[") and "] " in line:
+            line = line.split("] ", 1)[1]
+        snippets.append(line)
+    joined = " | ".join(snippets)
+    return joined[:600] if len(joined) > 600 else joined
 
 
 def _build_notion(settings: Settings, store: MeetingStore) -> NotionService | None:
@@ -448,12 +511,13 @@ def _build_notion(settings: Settings, store: MeetingStore) -> NotionService | No
 
 
 class _Extractor:
-    def __init__(self, settings, llm, store, poster, notion) -> None:
+    def __init__(self, settings, llm, store, poster, notion, *, on_change=None) -> None:
         self.settings = settings
         self.llm = llm
         self.store = store
         self.poster = poster
         self.notion = notion
+        self.on_change = on_change
         self.queue: asyncio.Queue = asyncio.Queue()
         self.recent: list[CaptionLine] = []
         self.seen: set[str] = set()
@@ -512,7 +576,12 @@ class _Extractor:
                         )
                     except Exception:
                         logger.exception("task extract failed")
-                        records = []
+                        records = fallback_overheard_tasks(
+                            line.text,
+                            said_by=line.speaker,
+                            time=format_meeting_time(line.start_s),
+                            today=today,
+                        )
                     if records:
                         self.recent.clear()
                     for record in records:
@@ -520,6 +589,8 @@ class _Extractor:
                         if result.page_id:
                             record.notion_page_id = result.page_id
                             self.store.add_task(record)
+                            if self.on_change is not None:
+                                self.on_change()
                         await self.poster.post(result.message, PostReason.CONFIRMATION)
             if stop_after or self._stopped:
                 return

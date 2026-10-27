@@ -65,13 +65,30 @@ class OpenAIResponsesClient:
             tool_list.append({"type": "web_search"})
         chosen_model = model_override or self.model
         started = time.perf_counter()
-        response = await self._sdk().responses.create(
-            model=chosen_model,
-            input=input,
-            tools=tool_list or None,
-            store=False,
-            timeout=timeout_s or self.timeout_s,
-        )
+        try:
+            response = await self._sdk().responses.create(
+                model=chosen_model,
+                input=input,
+                tools=tool_list or None,
+                store=False,
+                timeout=timeout_s or self.timeout_s,
+            )
+        except Exception as exc:
+            status = getattr(exc, "status_code", None)
+            if chosen_model != "gpt-4o-mini" and (
+                status in (400, 404) or "model" in str(exc).lower()
+            ):
+                logger.warning("model %s rejected (%s); retrying with gpt-4o-mini", chosen_model, exc)
+                chosen_model = "gpt-4o-mini"
+                response = await self._sdk().responses.create(
+                    model=chosen_model,
+                    input=input,
+                    tools=tool_list or None,
+                    store=False,
+                    timeout=timeout_s or self.timeout_s,
+                )
+            else:
+                raise
         logger.info(
             "llm respond model=%s web_search=%s duration_ms=%d",
             chosen_model,

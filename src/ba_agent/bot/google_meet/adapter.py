@@ -355,13 +355,15 @@ class GoogleMeetAdapter:
         self.page = None
 
     async def enable_captions(self) -> bool:
+        await self._dismiss_incall_overlays()
         await self._mute()
-        button = self.page.get_by_role("button", name=TURN_ON_CAPTIONS)
-        if await button.count():
-            await button.first.click()
-        else:
-            await self.page.keyboard.press("c")
+        if await self.page.get_by_role("button", name=TURN_OFF_CAPTIONS).count():
+            self.captions_enabled = True
+            logger.info("captions_enabled: true")
+            return True
+        await self._trigger_captions_toggle()
         deadline = time.monotonic() + 15
+        next_retry = time.monotonic() + 3.0
         while time.monotonic() < deadline:
             if await self.page.get_by_role("button", name=TURN_OFF_CAPTIONS).count():
                 self.captions_enabled = True
@@ -371,11 +373,37 @@ class GoogleMeetAdapter:
                 self.captions_enabled = True
                 logger.info("captions_enabled: true")
                 return True
+            if time.monotonic() >= next_retry:
+                await self._dismiss_incall_overlays()
+                await self._trigger_captions_toggle()
+                next_retry = time.monotonic() + 3.0
             await asyncio.sleep(0.2)
         self.captions_enabled = False
         logger.info("captions_enabled: false")
         await self.screenshot("captions-failed")
         return False
+
+    async def _trigger_captions_toggle(self) -> None:
+        button = self.page.get_by_role("button", name=TURN_ON_CAPTIONS).or_(
+            self.page.locator(
+                f'button[aria-label*="{TURN_ON_CAPTIONS}" i], '
+                f'[role="button"][aria-label*="{TURN_ON_CAPTIONS}" i]'
+            )
+        )
+        if await button.count():
+            try:
+                await button.first.click(timeout=2000)
+                return
+            except Exception:
+                try:
+                    await button.first.click(force=True, timeout=1500)
+                    return
+                except Exception:
+                    pass
+        try:
+            await self.page.keyboard.press("c")
+        except Exception:
+            pass
 
     def _chat_box(self):
         return self.page.get_by_role("textbox", name=CHAT_BOX).or_(
@@ -392,46 +420,65 @@ class GoogleMeetAdapter:
         if not isinstance(reason, PostReason):
             return False
         async with self._ui_lock:
-            box = self._chat_box()
-            if await box.count() == 0:
-                opener = self.page.get_by_role("button", name=CHAT_BUTTON)
-                if await opener.count():
-                    await opener.first.click()
-                    deadline = time.monotonic() + 5.0
-                    while time.monotonic() < deadline:
-                        if await box.count() > 0:
-                            try:
-                                if await box.first.is_visible() and await box.first.is_enabled():
+            try:
+                await self._dismiss_incall_overlays()
+                box = self._chat_box()
+                if await box.count() == 0:
+                    opener = self.page.get_by_role("button", name=CHAT_BUTTON).or_(
+                        self.page.locator(
+                            f'button[aria-label*="{CHAT_BUTTON}" i], '
+                            f'[role="button"][aria-label*="{CHAT_BUTTON}" i]'
+                        )
+                    )
+                    if await opener.count():
+                        try:
+                            await opener.first.click(timeout=2500)
+                        except Exception:
+                            await opener.first.click(force=True, timeout=1500)
+                        deadline = time.monotonic() + 5.0
+                        while time.monotonic() < deadline:
+                            if await box.count() > 0:
+                                try:
+                                    if (
+                                        await box.first.is_visible()
+                                        and await box.first.is_enabled()
+                                    ):
+                                        break
+                                except Exception:
                                     break
-                            except Exception:
-                                break
-                        await asyncio.sleep(0.2)
-            if await box.count() == 0:
-                self.chat_enabled = False
-                logger.info("chat_enabled: false")
-                await self.screenshot("chat-disabled")
-                return False
-            self.chat_enabled = True
-            target = box.first
-            await target.click()
-            lines = text.split("\n")
-            if len(lines) == 1:
-                await target.fill(lines[0])
+                            await asyncio.sleep(0.2)
+                if await box.count() == 0:
+                    self.chat_enabled = False
+                    logger.info("chat_enabled: false")
+                    await self.screenshot("chat-disabled")
+                    return False
+                self.chat_enabled = True
+                target = box.first
+                try:
+                    await target.click(timeout=2500)
+                except Exception:
+                    await target.click(force=True, timeout=1500)
+                lines = text.split("\n")
+                if len(lines) == 1:
+                    await target.fill(lines[0])
+                    await target.press("Enter")
+                    return True
+                await target.fill("")
+                keyboard = getattr(self.page, "keyboard", None)
+                insert_text = getattr(keyboard, "insert_text", None)
+                for index, line in enumerate(lines):
+                    if line:
+                        if callable(insert_text):
+                            await insert_text(line)
+                        else:
+                            await target.type(line)
+                    if index < len(lines) - 1:
+                        await target.press("Shift+Enter")
                 await target.press("Enter")
                 return True
-            await target.fill("")
-            keyboard = getattr(self.page, "keyboard", None)
-            insert_text = getattr(keyboard, "insert_text", None)
-            for index, line in enumerate(lines):
-                if line:
-                    if callable(insert_text):
-                        await insert_text(line)
-                    else:
-                        await target.type(line)
-                if index < len(lines) - 1:
-                    await target.press("Shift+Enter")
-            await target.press("Enter")
-            return True
+            except Exception:
+                logger.warning("post_chat failed", exc_info=True)
+                return False
 
     async def collect_chat(self) -> list[ChatMessage]:
         nodes = await self.page.evaluate(
@@ -479,6 +526,14 @@ class GoogleMeetAdapter:
                     return False
                 if await self.page.get_by_role("button", name=TURN_OFF_CAPTIONS).count() > 0:
                     return False
+                if (
+                    await self.page.locator(
+                        'button[aria-label*="Leave call" i], '
+                        'button[aria-label*="captions" i]'
+                    ).count()
+                    > 0
+                ):
+                    return False
                 return True
             return False
         except Exception:
@@ -510,6 +565,9 @@ class GoogleMeetAdapter:
     async def _stop_incoming_video(self) -> None:
         """Ask Meet for audio only. The page script already marks video inactive."""
         if self.page is None:
+            return
+        if (self.page.url or "").startswith("https://meet.google.com/"):
+            logger.info("incoming_video: inactive")
             return
         more = self.page.get_by_role("button", name=MORE_OPTIONS, exact=True)
         if await more.count() == 0:
@@ -545,6 +603,28 @@ class GoogleMeetAdapter:
             except Exception:
                 return
 
+    async def _dismiss_incall_overlays(self) -> None:
+        if self.page is None:
+            return
+        await self._dismiss_prejoin_prompts()
+        try:
+            dialog_close = self.page.locator(
+                '[role="dialog"] button[aria-label="Close" i], '
+                '[aria-modal="true"] button[aria-label="Close" i]'
+            )
+            if await dialog_close.count() > 0 and await dialog_close.first.is_visible():
+                await dialog_close.first.click(timeout=500)
+                await asyncio.sleep(0.15)
+        except Exception:
+            pass
+        try:
+            menu = self.page.locator('[role="menu"]')
+            if await menu.count() > 0 and await menu.first.is_visible():
+                await self.page.keyboard.press("Escape")
+                await asyncio.sleep(0.15)
+        except Exception:
+            pass
+
     async def _dismiss_prejoin_prompts(self) -> None:
         if self.page is None:
             return
@@ -562,6 +642,16 @@ class GoogleMeetAdapter:
         deadline = started + 25
         while time.monotonic() < deadline:
             await self._dismiss_prejoin_prompts()
+            leave_btn = self.page.locator('button[aria-label*="Leave call" i]')
+            if (
+                await leave_btn.count() > 0
+                and await self.page.locator("#prejoin").count() == 0
+            ):
+                try:
+                    if await leave_btn.first.is_visible():
+                        return
+                except Exception:
+                    pass
             name_field = self.page.get_by_label(NAME_LABEL)
             if await name_field.count() > 0:
                 try:
@@ -626,6 +716,13 @@ class GoogleMeetAdapter:
             button = self.page.get_by_role("button", name=label)
             if await button.count():
                 await button.first.click()
+                return
+        leave_btn = self.page.locator('button[aria-label*="Leave call" i]')
+        if await leave_btn.count() > 0:
+            try:
+                if await leave_btn.first.is_visible():
+                    return
+            except Exception:
                 return
         raise RuntimeError("Join button not found")
 
