@@ -6,8 +6,15 @@ TURN_OFF_CAPTIONS = "Turn off captions"
 CHAT_BOX = "Send a message to everyone"
 CHAT_BUTTON = "Chat with everyone"
 LEAVE_CALL = "Leave call"
-JOIN_BUTTONS = ("Join now", "Ask to join", "Switch here")
-DISMISS_BUTTONS = ("Continue without microphone and camera", "Not now", "Dismiss", "Got it")
+JOIN_BUTTONS = ("Join now", "Ask to join", "Switch here", "Rejoin")
+DISMISS_BUTTONS = (
+    "Continue without microphone and camera",
+    "Continue without camera",
+    "Continue without microphone",
+    "Not now",
+    "Dismiss",
+    "Got it",
+)
 LOBBY_TEXTS = (
     "Please wait until a meeting host brings you into the call",
     "Asking to be let in",

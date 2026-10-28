@@ -179,10 +179,16 @@ export class BaContainer extends Container<Env> {
         const statusRes = await super.fetch(new Request("http://localhost/status"));
         if (statusRes.ok) {
           const payload = (await statusRes.json()) as Record<string, unknown>;
+          const stage = typeof payload.stage === "string" ? payload.stage : "";
+          const isIdle = Boolean(payload.idle) || stage === "idle";
+          const activeMeetUrl =
+            typeof payload.meet_url === "string" && payload.meet_url
+              ? payload.meet_url
+              : this.envVars.MEET_URL || "";
           return jsonResponse({
             ...payload,
-            idle: false,
-            meet_url: this.envVars.MEET_URL || "",
+            idle: isIdle,
+            meet_url: activeMeetUrl,
           });
         }
       } catch {
@@ -222,9 +228,9 @@ export class BaContainer extends Container<Env> {
   }
 
   private async handleJoin(request: Request): Promise<Response> {
-    let body: { url?: unknown; restart?: unknown };
+    let body: { url?: unknown; restart?: unknown; force?: unknown };
     try {
-      body = (await request.json()) as { url?: unknown; restart?: unknown };
+      body = (await request.json()) as { url?: unknown; restart?: unknown; force?: unknown };
     } catch {
       return jsonResponse({ ok: false, error: "Invalid JSON body" }, 400);
     }
@@ -257,7 +263,7 @@ export class BaContainer extends Container<Env> {
           new Request("http://localhost/join", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ url: normalizedUrl }),
+            body: JSON.stringify({ url: normalizedUrl, force: Boolean(body.force) }),
           }),
         );
         if (joinRes.ok) {
@@ -272,9 +278,7 @@ export class BaContainer extends Container<Env> {
       } catch {
         // Fall back to container restart below if the running container port did not respond.
       }
-      if (switchedMeeting) {
-        await this.stopForNextMeeting();
-      }
+      await this.stopForNextMeeting();
     }
 
     try {
@@ -300,10 +304,10 @@ export class BaContainer extends Container<Env> {
     }
 
     return jsonResponse({
+      ...statusPayload,
       ok: true,
       meet_url: normalizedUrl,
       switched: switchedMeeting,
-      ...statusPayload,
     });
   }
 

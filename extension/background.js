@@ -41,6 +41,8 @@ async function saveJoinedMeeting(code, entry) {
   for (const [k, v] of Object.entries(joinedMeetings)) {
     if (!v || now - (v.timestamp || 0) > DEDUP_WINDOW_MS) {
       delete joinedMeetings[k];
+    } else if (k !== code && (entry.status === "starting" || entry.status === "started")) {
+      delete joinedMeetings[k];
     }
   }
   joinedMeetings[code] = { ...entry, timestamp: now };
@@ -92,12 +94,13 @@ async function triggerJoin({ meetUrl, phase, force = false, tabId = null }) {
   const normalizedMeetUrl = `https://meet.google.com/${code}`;
   const joinedMeetings = await getJoinedMap();
   const existing = joinedMeetings[code];
-  if (
+  const wasAlreadyStarted = Boolean(
     !force &&
-    existing &&
-    existing.status === "started" &&
-    Date.now() - (existing.timestamp || 0) < DEDUP_WINDOW_MS
-  ) {
+      existing &&
+      existing.status === "started" &&
+      Date.now() - (existing.timestamp || 0) < DEDUP_WINDOW_MS,
+  );
+  if (wasAlreadyStarted && phase !== "joined") {
     setBadge(tabId, "ON", "#16a34a");
     return {
       ok: true,
@@ -112,17 +115,23 @@ async function triggerJoin({ meetUrl, phase, force = false, tabId = null }) {
   }
 
   inFlightCodes.add(code);
-  setBadge(tabId, "BOOT", "#d97706");
-  await saveJoinedMeeting(code, {
-    meet_url: normalizedMeetUrl,
-    status: "starting",
-  });
+  if (!wasAlreadyStarted) {
+    setBadge(tabId, "BOOT", "#d97706");
+    await saveJoinedMeeting(code, {
+      meet_url: normalizedMeetUrl,
+      status: "starting",
+    });
+  }
 
   try {
     const response = await fetch(`${baseUrl}/join`, {
       method: "POST",
       headers: buildHeaders(settings.webhookSecret),
-      body: JSON.stringify({ url: normalizedMeetUrl }),
+      body: JSON.stringify({
+        url: normalizedMeetUrl,
+        phase: phase || "open",
+        force: Boolean(force),
+      }),
     });
 
     let data = {};
@@ -155,6 +164,7 @@ async function triggerJoin({ meetUrl, phase, force = false, tabId = null }) {
 
     return {
       ok: true,
+      alreadyStarted: wasAlreadyStarted,
       code,
       meet_url: normalizedMeetUrl,
       ...data,
@@ -225,3 +235,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   return false;
 });
+
+if (chrome.tabs && chrome.tabs.onUpdated) {
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    const url = changeInfo.url || (changeInfo.status === "complete" ? tab?.url : null);
+    if (!url || !parseMeetCode(url)) return;
+    triggerJoin({ meetUrl: url, phase: "open", tabId }).catch(() => {});
+  });
+}

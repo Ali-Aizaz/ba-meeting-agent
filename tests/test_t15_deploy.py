@@ -258,3 +258,151 @@ async def test_t15_cleanup_awaits_after_the_join_task_is_cancelled() -> None:
     with pytest.raises(asyncio.CancelledError):
         await task
     assert ran
+
+
+async def test_t15_switching_meetings_aborts_lobby_wait_without_retrying_old_meeting(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ba_agent.bot.google_meet.adapter import GoogleMeetAdapter, MeetDisconnected
+    from ba_agent.session import _run_single_meeting
+
+    settings = load_settings()
+    settings.notion.enabled = False
+    settings.storage.sqlite_path = str(tmp_path / "meeting.db")
+    settings.browser.rejoin_limit = 3
+
+    next_url_event = asyncio.Event()
+    join_attempts: list[str] = []
+
+    class FakeAdapter:
+        def __init__(self) -> None:
+            self.ended_event = asyncio.Event()
+            self._left = False
+            self._admitted_at = None
+            self.chat_enabled = True
+
+        async def join(self, url: str) -> None:
+            join_attempts.append(url)
+            # Simulate a new /join request arriving while waiting in the lobby of meeting 1.
+            next_url_event.set()
+            self.ended_event.set()
+            raise MeetDisconnected("Meeting ended or switched while waiting to be admitted")
+
+        async def close(self, *, force: bool = True) -> None:
+            del force
+
+        async def drain_caption_frames(self):
+            return []
+
+        async def leave(self) -> None:
+            self._left = True
+
+    monkeypatch.setattr("ba_agent.session.build_llm", lambda _s: object())
+    status = StatusState()
+    adapter = FakeAdapter()
+    await _run_single_meeting(
+        settings,
+        cast(GoogleMeetAdapter, adapter),
+        status,
+        "https://meet.google.com/aaa-bbbb-ccc",
+        next_url_event=next_url_event,
+    )
+    # Must abort after 1 attempt instead of retrying the old meeting 3 times.
+    assert join_attempts == ["https://meet.google.com/aaa-bbbb-ccc"]
+    assert status.meet_url == "https://meet.google.com/aaa-bbbb-ccc"
+    assert adapter._left is True
+
+
+async def test_t15_switching_meetings_runs_final_save_in_background_and_leaves_immediately(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from ba_agent.bot.google_meet.adapter import GoogleMeetAdapter
+    from ba_agent.session import _run_single_meeting
+
+    settings = load_settings()
+    settings.notion.enabled = False
+    settings.storage.sqlite_path = str(tmp_path / "meeting.db")
+
+    next_url_event = asyncio.Event()
+    background_saves: set[asyncio.Task[None]] = set()
+    save_started = asyncio.Event()
+    release_save = asyncio.Event()
+    save_finished = asyncio.Event()
+
+    async def slow_bg_save(*_args, **_kwargs) -> None:
+        save_started.set()
+        await release_save.wait()
+        save_finished.set()
+
+    monkeypatch.setattr("ba_agent.session._save_snapshot_and_close_notion", slow_bg_save)
+    monkeypatch.setattr("ba_agent.session.build_llm", lambda _s: object())
+
+    class FakeAdapter:
+        def __init__(self) -> None:
+            self.ended_event = asyncio.Event()
+            self._left = False
+            self._admitted_at = 1.0
+            self.chat_enabled = True
+
+        async def join(self, url: str) -> None:
+            del url
+
+        async def enable_captions(self) -> bool:
+            return True
+
+        async def ensure_chat_open(self) -> bool:
+            return True
+
+        async def post_chat(self, text: str, reason) -> bool:
+            del text, reason
+            return True
+
+        async def meeting_closed(self) -> bool:
+            return False
+
+        def meeting_seconds(self) -> float:
+            return 1.0
+
+        async def drain_caption_frames(self):
+            # Trigger switch to next meeting once in call.
+            next_url_event.set()
+            self.ended_event.set()
+            return []
+
+        async def collect_chat(self):
+            return []
+
+        async def other_participant_count(self) -> int:
+            return 1
+
+        async def close(self, *, force: bool = True) -> None:
+            del force
+
+        async def leave(self) -> None:
+            self._left = True
+
+    status = StatusState()
+    adapter = FakeAdapter()
+    # _run_single_meeting must return immediately even while slow_bg_save is still blocked.
+    await asyncio.wait_for(
+        _run_single_meeting(
+            settings,
+            cast(GoogleMeetAdapter, adapter),
+            status,
+            "https://meet.google.com/aaa-bbbb-ccc",
+            next_url_event=next_url_event,
+            background_saves=background_saves,
+        ),
+        timeout=2.0,
+    )
+    assert adapter._left is True
+    assert len(background_saves) == 1
+    assert not save_finished.is_set()
+    release_save.set()
+    await asyncio.wait_for(
+        asyncio.gather(*list(background_saves)),
+        timeout=2.0,
+    )
+    assert save_finished.is_set()

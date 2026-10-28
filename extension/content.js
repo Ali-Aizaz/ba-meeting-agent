@@ -9,6 +9,8 @@
   let fastPollUntil = 0;
   let lastLocalTriggerText = "";
   let lastLocalTriggerAt = 0;
+  let lastNotifyAttemptAt = 0;
+  let lastViewKnockingClickAt = 0;
   const recentTrail = [];
   let cachedSettings = {
     autoStart: true,
@@ -131,13 +133,27 @@
     }, ttl);
   }
 
-  function notifyBackground(code, phase) {
+  function parseCodeFromUrl(rawUrl) {
+    if (!rawUrl || typeof rawUrl !== "string") return null;
+    try {
+      const parsed = new URL(rawUrl.trim());
+      const match = MEET_CODE_RE.exec(parsed.pathname);
+      return match ? match[1].toLowerCase() : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function notifyBackground(code, phase, options = {}) {
+    const force = Boolean(options.force);
     const url = `https://meet.google.com/${code}`;
+    lastNotifyAttemptAt = Date.now();
     const shouldTrigger =
-      cachedSettings.autoStart &&
-      ((phase === "open" && cachedSettings.triggerWhen === "open") ||
-        (phase === "joined" && cachedSettings.triggerWhen === "joined"));
-    if (shouldTrigger) {
+      force ||
+      (cachedSettings.autoStart &&
+        ((phase === "open" && cachedSettings.triggerWhen === "open") ||
+          (phase === "joined" && cachedSettings.triggerWhen === "joined")));
+    if (shouldTrigger && !options.silent) {
       showToast("TechSol BA: Starting Cloudflare bot for this Meet…", "info");
     }
     chrome.runtime.sendMessage(
@@ -146,15 +162,22 @@
         url,
         code,
         phase,
+        force,
       },
       (response) => {
-        if (chrome.runtime.lastError || !response) return;
+        if (chrome.runtime.lastError || !response) {
+          if (phase === "open") lastNotifiedOpenCode = null;
+          if (phase === "joined") lastNotifiedJoinedCode = null;
+          return;
+        }
         if (response.skipped) return;
         if (response.needsConfig) {
           showToast("TechSol BA: Click the extension icon to set your Worker URL", "warn");
           return;
         }
         if (!response.ok) {
+          if (phase === "open") lastNotifiedOpenCode = null;
+          if (phase === "joined") lastNotifiedJoinedCode = null;
           showToast(`TechSol BA error: ${response.error || "Failed to start"}`, "error");
           return;
         }
@@ -173,14 +196,19 @@
       return;
     }
 
-    if (code !== lastNotifiedOpenCode) {
+    const now = Date.now();
+    if (code !== lastNotifiedOpenCode && now - lastNotifyAttemptAt > 2500) {
       lastNotifiedOpenCode = code;
       notifyBackground(code, "open");
     }
 
-    if (code !== lastNotifiedJoinedCode && isInActiveCall()) {
-      lastNotifiedJoinedCode = code;
-      notifyBackground(code, "joined");
+    if (isInActiveCall()) {
+      if (code !== lastNotifiedJoinedCode) {
+        lastNotifiedJoinedCode = code;
+        notifyBackground(code, "joined");
+      }
+    } else {
+      lastNotifiedJoinedCode = null;
     }
   }
 
@@ -210,7 +238,9 @@
     for (const dialog of dialogs) {
       const dialogText = (dialog.innerText || dialog.textContent || "").toLowerCase();
       const matchedName = botNames.find((name) => dialogText.includes(name));
-      if (!matchedName) continue;
+      const isGenericKnock =
+        dialogText.includes("wants to join") || dialogText.includes("waiting to be let in");
+      if (!matchedName && !isGenericKnock) continue;
 
       const buttons = dialog.querySelectorAll('button, [role="button"]');
       for (const btn of buttons) {
@@ -220,19 +250,31 @@
           return;
         }
       }
+      if (isGenericKnock && Date.now() - lastViewKnockingClickAt > 5000) {
+        for (const btn of buttons) {
+          const text = (btn.innerText || btn.textContent || "").trim().toLowerCase();
+          const aria = (btn.getAttribute("aria-label") || "").trim().toLowerCase();
+          if (text === "view" || text.endsWith("\nview") || aria === "view" || aria === "view all") {
+            lastViewKnockingClickAt = Date.now();
+            btn.click();
+            return;
+          }
+        }
+      }
     }
 
     const allButtons = document.querySelectorAll('button, [role="button"]');
     for (const btn of allButtons) {
       if (isAdmitButton(btn)) {
-        const container =
-          btn.closest('[role="dialog"], [role="alertdialog"], [aria-modal="true"], [aria-live], [jscontroller]') ||
-          document.body;
-        const containerText = (container.innerText || container.textContent || "").toLowerCase();
-        if (botNames.some((name) => containerText.includes(name))) {
-          btn.click();
-          showToast(`TechSol BA: Auto-admitted ${cachedSettings.botName || "BA Assistant"} ✓`, "success");
-          return;
+        let cursor = btn.parentElement;
+        for (let depth = 0; depth < 7 && cursor && cursor !== document.body; depth++) {
+          const containerText = (cursor.innerText || cursor.textContent || "").toLowerCase();
+          if (botNames.some((name) => containerText.includes(name))) {
+            btn.click();
+            showToast(`TechSol BA: Auto-admitted ${cachedSettings.botName || "BA Assistant"} ✓`, "success");
+            return;
+          }
+          cursor = cursor.parentElement;
         }
       }
     }
@@ -290,7 +332,23 @@
 
     chrome.runtime.sendMessage({ type: "CHECK_STATUS" }, (response) => {
       statusPollInFlight = false;
-      if (chrome.runtime.lastError || !response || !response.ok || response.idle) return;
+      if (chrome.runtime.lastError || !response || !response.ok) return;
+
+      const currentCode = getMeetCode();
+      if (currentCode && cachedSettings.autoStart && isInActiveCall()) {
+        const botCode = parseCodeFromUrl(response.meet_url);
+        const needsSummon =
+          Boolean(response.idle) ||
+          response.stage === "idle" ||
+          response.stage === "failed" ||
+          (Boolean(botCode) && botCode !== currentCode);
+        if (needsSummon && Date.now() - lastNotifyAttemptAt > 12000) {
+          notifyBackground(currentCode, "joined", { force: true, silent: true });
+          return;
+        }
+      }
+
+      if (response.idle) return;
 
       const events = Array.isArray(response.events) ? response.events : [];
       const unseen = events.filter((ev) => ev && typeof ev.seq === "number" && ev.seq > lastActivitySeq);

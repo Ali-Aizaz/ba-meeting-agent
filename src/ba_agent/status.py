@@ -42,11 +42,12 @@ class StatusState:
     def __init__(
         self,
         meeting_id: str = "",
-        on_join: Callable[[str], None] | None = None,
+        on_join: Callable[..., None] | None = None,
         on_activity: Callable[[str, str], None] | None = None,
     ) -> None:
         self._lock = threading.Lock()
         self.meeting_id = meeting_id
+        self.meet_url = ""
         self.captions_enabled = False
         self.chat_enabled = False
         self.stage = "idle"
@@ -97,9 +98,11 @@ class StatusState:
         with self._lock:
             payload: dict = {
                 "meeting_id": self.meeting_id,
+                "meet_url": self.meet_url,
                 "captions_enabled": self.captions_enabled,
                 "chat_enabled": self.chat_enabled,
                 "stage": self.stage,
+                "idle": self.stage == "idle",
                 "activity": self.activity,
                 "activity_kind": self.activity_kind,
                 "activity_seq": self.activity_seq,
@@ -153,14 +156,18 @@ def start_status_server(state: StatusState, host: str, port: int) -> ThreadingHT
                 self._send_json({"ok": False, "error": "Invalid JSON body"}, 400)
                 return
             url = data.get("url") if isinstance(data, dict) else ""
+            force = bool(data.get("force")) if isinstance(data, dict) else False
             try:
                 cleaned = validate_meet_url(str(url or ""))
             except StartupError as exc:
                 self._send_json({"ok": False, "error": str(exc)}, 400)
                 return
             if state.on_join is not None:
-                state.on_join(cleaned)
-            self._send_json({"ok": True, "meet_url": cleaned, **state.as_dict()}, 200)
+                try:
+                    state.on_join(cleaned, force)
+                except TypeError:
+                    state.on_join(cleaned)
+            self._send_json({**state.as_dict(), "ok": True, "meet_url": cleaned}, 200)
 
         def log_message(self, fmt: str, *args) -> None:
             return

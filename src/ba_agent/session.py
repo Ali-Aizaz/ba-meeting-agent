@@ -80,20 +80,29 @@ async def run_join(settings: Settings, url: str) -> None:
     loop = asyncio.get_running_loop()
     next_url_event = asyncio.Event()
     queued_url: list[str] = []
+    background_saves: set[asyncio.Task[None]] = set()
     current_url = url
     adapter = GoogleMeetAdapter(settings)
 
-    def on_join_request(new_url: str) -> None:
+    def on_join_request(new_url: str, force: bool = False) -> None:
         def _schedule() -> None:
             same_meeting = _canonical_url(new_url) == _canonical_url(current_url)
-            if same_meeting and status.stage in {"joining", "in_call"}:
+            if (
+                not force
+                and same_meeting
+                and status.stage in {"joining", "in_call"}
+                and not adapter._left
+                and not adapter.ended_event.is_set()
+            ):
+                notify_host = getattr(adapter, "notify_host_present", None)
+                if callable(notify_host):
+                    notify_host()
                 logger.info("ignoring duplicate /join for active meeting %s", new_url)
                 return
             queued_url.clear()
             queued_url.append(new_url)
             next_url_event.set()
-            if not same_meeting or adapter._admitted_at is None:
-                adapter.ended_event.set()
+            adapter.ended_event.set()
 
         loop.call_soon_threadsafe(_schedule)
 
@@ -112,12 +121,20 @@ async def run_join(settings: Settings, url: str) -> None:
     keep_alive = bool(settings.browser.keep_alive) and "PYTEST_CURRENT_TEST" not in os.environ
     try:
         while True:
-            next_url_event.clear()
+            if not queued_url:
+                next_url_event.clear()
             adapter.ended_event = asyncio.Event()
             adapter._left = False
             adapter._admitted_at = None
             try:
-                await _run_single_meeting(settings, adapter, status, current_url)
+                await _run_single_meeting(
+                    settings,
+                    adapter,
+                    status,
+                    current_url,
+                    next_url_event=next_url_event,
+                    background_saves=background_saves if keep_alive else None,
+                )
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -137,8 +154,12 @@ async def run_join(settings: Settings, url: str) -> None:
                 await next_url_event.wait()
             if queued_url:
                 current_url = queued_url.pop(0)
+                if not queued_url:
+                    next_url_event.clear()
     finally:
         _let_cleanup_finish()
+        if background_saves:
+            await asyncio.gather(*list(background_saves), return_exceptions=True)
         await adapter.close(force=True)
         if server is not None:
             server.shutdown()
@@ -149,10 +170,14 @@ async def _run_single_meeting(
     adapter: GoogleMeetAdapter,
     status: StatusState,
     url: str,
+    *,
+    next_url_event: asyncio.Event | None = None,
+    background_saves: set[asyncio.Task[None]] | None = None,
 ) -> None:
     store = open_meeting(resolve_path(settings.storage.sqlite_path), url)
     set_meeting_id(store.meeting_id)
     status.meeting_id = store.meeting_id
+    status.meet_url = _canonical_url(url)
     status.captions_enabled = False
     status.chat_enabled = False
     status.stage = "joining"
@@ -161,6 +186,7 @@ async def _run_single_meeting(
     poster = SessionPoster(adapter, OutputGate(), store)
     llm = None
     joined = False
+    store_closed = False
     try:
         if notion and notion.configured:
             await notion.verify()
@@ -260,6 +286,8 @@ async def _run_single_meeting(
         consent_posted = store.get_meta("consent_posted") == "1"
         attempts = 0
         while attempts < settings.browser.rejoin_limit:
+            if next_url_event is not None and next_url_event.is_set():
+                break
             attempts += 1
             try:
                 await adapter.join(url)
@@ -300,36 +328,85 @@ async def _run_single_meeting(
                     notion=notion,
                     notes_dirty=notes_dirty,
                     on_activity=status.record_activity,
+                    next_url_event=next_url_event,
                 )
                 break
             except Exception as exc:
+                if (
+                    next_url_event is not None and next_url_event.is_set()
+                ) or adapter.ended_event.is_set():
+                    logger.info(
+                        "aborting join attempt %s for %s because meeting ended or switched",
+                        attempts,
+                        url,
+                    )
+                    break
                 status.last_error = f"{type(exc).__name__}: {exc}"
                 status.stage = "retrying"
                 logger.exception("meeting attempt %s failed", attempts)
                 await adapter.close(force=False)
+                if next_url_event is not None and next_url_event.is_set():
+                    break
                 adapter.ended_event = asyncio.Event()
                 if attempts >= settings.browser.rejoin_limit:
                     status.stage = "failed"
                     raise
     finally:
         _let_cleanup_finish()
-        try:
-            if llm is not None and (
-                joined or store.count_captions() > 0 or len(store.tasks()) > 0
-            ):
-                current_sig = f"{store.count_captions()}:{len(store.tasks())}"
-                if (
-                    store.get_meta("save_announced") != "1"
-                    or store.get_meta("saved_sig") != current_sig
-                ):
-                    await _save(settings, store, notion, llm, announce=True, poster=poster)
-        except Exception:
-            logger.exception("final save failed")
-        store.set_meta("closed", "1")
-        await adapter.leave()
-        if notion is not None:
-            await notion.aclose()
-        store.close()
+        status.stage = "leaving"
+        switching = next_url_event is not None and next_url_event.is_set()
+        has_data = joined or store.count_captions() > 0 or len(store.tasks()) > 0
+        current_sig = f"{store.count_captions()}:{len(store.tasks())}"
+        needs_final_save = bool(
+            llm is not None
+            and has_data
+            and (
+                store.get_meta("save_announced") != "1"
+                or store.get_meta("saved_sig") != current_sig
+            )
+        )
+        if switching and background_saves is not None and needs_final_save:
+            # Leave the old call and release the SQLite store immediately so the browser
+            # can join the new meeting without waiting 15-35s for LLM + Notion.
+            lines_snapshot = store.last(100000)
+            tasks_snapshot = store.tasks()
+            store.set_meta("saved", "1")
+            store.set_meta("saved_sig", current_sig)
+            store.set_meta("closed", "1")
+            store.close()
+            store_closed = True
+            await adapter.leave()
+            bg_task = asyncio.create_task(
+                _save_snapshot_and_close_notion(
+                    settings,
+                    notion,
+                    llm,
+                    lines_snapshot,
+                    tasks_snapshot,
+                )
+            )
+            background_saves.add(bg_task)
+            bg_task.add_done_callback(background_saves.discard)
+            notion = None
+        else:
+            try:
+                if needs_final_save:
+                    await _save(
+                        settings,
+                        store,
+                        notion,
+                        llm,
+                        announce=not switching,
+                        poster=poster,
+                    )
+            except Exception:
+                logger.exception("final save failed")
+            store.set_meta("closed", "1")
+            await adapter.leave()
+            if notion is not None:
+                await notion.aclose()
+            if not store_closed:
+                store.close()
 
 
 async def _loops(
@@ -347,6 +424,7 @@ async def _loops(
     notion: NotionService | None = None,
     notes_dirty: asyncio.Event | None = None,
     on_activity=None,
+    next_url_event: asyncio.Event | None = None,
 ) -> None:
     trigger_queue: asyncio.Queue[TriggerEvent | None] = asyncio.Queue()
 
@@ -505,11 +583,40 @@ async def _loops(
         await asyncio.gather(*poller_tasks, return_exceptions=True)
         trigger_queue.put_nowait(None)
         extractor.stop()
-        _done, pending = await asyncio.wait(worker_tasks, timeout=5.0)
+        wait_timeout = (
+            0.2 if (next_url_event is not None and next_url_event.is_set()) else 5.0
+        )
+        _done, pending = await asyncio.wait(worker_tasks, timeout=wait_timeout)
         for task in pending:
             task.cancel()
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
+
+
+async def _save_snapshot_and_close_notion(
+    settings,
+    notion: NotionService | None,
+    llm,
+    lines: list[CaptionLine],
+    tasks: list[TaskRecord],
+) -> None:
+    try:
+        if notion is None or not notion.schema.summary_db or llm is None:
+            return
+        transcript = "\n".join(
+            f"{format_meeting_time(line.start_s)} {line.speaker}: {line.text}"
+            for line in lines
+        )
+        summary = await _summarize(llm, transcript, settings.llm.summary_timeout_s)
+        await notion.save_meeting(summary, transcript, tasks, append_children=True)
+    except Exception:
+        logger.exception("background final save failed")
+    finally:
+        if notion is not None:
+            try:
+                await notion.aclose()
+            except Exception:
+                pass
 
 
 async def _save_live(store: MeetingStore, notion: NotionService) -> str:

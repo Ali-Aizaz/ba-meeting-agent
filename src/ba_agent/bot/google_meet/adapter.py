@@ -72,11 +72,16 @@ class GoogleMeetAdapter:
         self._ui_lock = asyncio.Lock()
         self._admitted_at: float | None = None
         self._left = False
+        self._host_joined_nudge = False
         self._last_chat_open_attempt: float = 0.0
         self._chat = ChatReader(settings.meeting.bot_name)
         self._playwright = None
         self._context = None
         self.page = None
+
+    def notify_host_present(self) -> None:
+        """Signal that the user has joined the Meet call so lobby wait can re-knock if needed."""
+        self._host_joined_nudge = True
 
     def ended(self) -> asyncio.Event:
         return self.ended_event
@@ -151,6 +156,41 @@ class GoogleMeetAdapter:
                     pass
         else:
             self.page = await self._context.new_page()
+        self._attach_dialog_handler(self.page)
+
+    def _attach_dialog_handler(self, page: Any) -> None:
+        if page is None or getattr(page, "_ba_dialog_attached", False):
+            return
+        on_fn = getattr(page, "on", None)
+        if callable(on_fn):
+            try:
+                on_fn("dialog", lambda d: asyncio.create_task(d.accept()))
+                page._ba_dialog_attached = True
+            except Exception:
+                pass
+
+    async def _reset_page_for_next_meeting(self) -> None:
+        """Open a clean tab and close the old Meet tab so no WebRTC/DOM state leaks."""
+        if self._context is not None and callable(getattr(self._context, "new_page", None)):
+            try:
+                old_pages = list(getattr(self._context, "pages", []) or [])
+                fresh = await self._context.new_page()
+                self._attach_dialog_handler(fresh)
+                self.page = fresh
+                for old in old_pages:
+                    if old is not fresh:
+                        try:
+                            await old.close()
+                        except Exception:
+                            pass
+                return
+            except Exception:
+                pass
+        if self.page is not None:
+            try:
+                await self.page.goto("about:blank", timeout=5000)
+            except Exception:
+                pass
 
     async def _seed_google_cookies(self) -> None:
         if self._context is None:
@@ -272,15 +312,27 @@ class GoogleMeetAdapter:
         url = validate_meet_url(url)
         self._left = False
         self._admitted_at = None
+        self._host_joined_nudge = False
+        self.captions_enabled = False
+        self.chat_enabled = True
+        self._last_chat_open_attempt = 0.0
+        self._chat = ChatReader(self.settings.meeting.bot_name)
         await self._ensure_browser()
+        if self.ended_event.is_set():
+            raise MeetDisconnected("Meeting ended before join")
         await self._ensure_google_login(url)
-        if not (self.page.url or "").startswith("https://meet.google.com/"):
-            await self.page.goto(url, wait_until="domcontentloaded")
-        else:
+        if self.ended_event.is_set():
+            raise MeetDisconnected("Meeting ended before navigation")
+        cur_before_nav = (self.page.url or "").strip()
+        if not cur_before_nav.startswith(url):
             try:
-                await self.page.goto(url, wait_until="domcontentloaded")
+                await self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
             except Exception:
-                pass
+                if self._should_keep_browser():
+                    await self._reset_page_for_next_meeting()
+                    await self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                elif not cur_before_nav.startswith("https://meet.google.com/"):
+                    raise
         await self._wait_for_prejoin()
         email, password = self._google_credentials()
         cur_url = self.page.url or ""
@@ -295,13 +347,17 @@ class GoogleMeetAdapter:
         ):
             # Cookies expired or were cleared; sign in and reload the meeting pre-join page.
             if await self._perform_google_login(url):
-                if not (self.page.url or "").startswith("https://meet.google.com/"):
-                    await self.page.goto(url, wait_until="domcontentloaded")
+                if not (self.page.url or "").startswith(url):
+                    await self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
                 await self._wait_for_prejoin()
+        if self.ended_event.is_set():
+            raise MeetDisconnected("Meeting ended during prejoin")
         await self._mute()
         await self._fill_name()
         await self._click_join()
-        admitted = await self._wait_until_admitted()
+        admitted = await self._wait_until_admitted(url)
+        if self.ended_event.is_set():
+            raise MeetDisconnected("Meeting ended or switched while waiting to be admitted")
         if not admitted:
             await self.screenshot("lobby-timeout")
             raise TimeoutError(
@@ -322,25 +378,26 @@ class GoogleMeetAdapter:
             if self.page is not None:
                 button = self.page.get_by_role("button", name=LEAVE_CALL)
                 if await button.count():
-                    await button.first.click()
+                    try:
+                        await button.first.click(timeout=2000)
+                    except Exception:
+                        await button.first.click(force=True, timeout=1000)
+                    just_leave = self.page.get_by_role("button", name="Just leave the call")
+                    if await just_leave.count():
+                        try:
+                            await just_leave.first.click(timeout=1000)
+                        except Exception:
+                            pass
         except Exception:
             logger.info("leave click skipped")
         if self._should_keep_browser():
-            try:
-                if self.page is not None:
-                    await self.page.goto("about:blank")
-            except Exception:
-                pass
+            await self._reset_page_for_next_meeting()
             return
         await self.close()
 
     async def close(self, *, force: bool = True) -> None:
         if not force and self._should_keep_browser():
-            try:
-                if self.page is not None:
-                    await self.page.goto("about:blank")
-            except Exception:
-                pass
+            await self._reset_page_for_next_meeting()
             return
         key = self._profile_key()
         _PERSISTENT_BROWSERS.pop(key, None)
@@ -370,6 +427,8 @@ class GoogleMeetAdapter:
         deadline = time.monotonic() + 15
         next_retry = time.monotonic() + 3.0
         while time.monotonic() < deadline:
+            if self.ended_event.is_set():
+                return False
             if await self.page.get_by_role("button", name=TURN_OFF_CAPTIONS).count():
                 self.captions_enabled = True
                 logger.info("captions_enabled: true")
@@ -733,6 +792,8 @@ class GoogleMeetAdapter:
         started = time.monotonic()
         deadline = started + 25
         while time.monotonic() < deadline:
+            if self.ended_event.is_set():
+                raise MeetDisconnected("Meeting ended during prejoin")
             if (self.page.url or "").startswith("https://accounts.google.com/"):
                 return
             await self._dismiss_prejoin_prompts()
@@ -806,27 +867,42 @@ class GoogleMeetAdapter:
                 pass
 
     async def _click_join(self) -> None:
-        await self._dismiss_prejoin_prompts()
-        await self._fill_name()
-        await self._mute()
-        for label in JOIN_BUTTONS:
-            button = self.page.get_by_role("button", name=label)
-            if await button.count():
-                await button.first.click()
-                return
-        leave_btn = self.page.locator('button[aria-label*="Leave call" i]')
-        if await leave_btn.count() > 0:
-            try:
-                if await leave_btn.first.is_visible():
+        deadline = time.monotonic() + 5.0
+        while True:
+            if self.ended_event.is_set():
+                raise MeetDisconnected("Meeting ended before clicking join")
+            await self._dismiss_prejoin_prompts()
+            await self._fill_name()
+            await self._mute()
+            for label in JOIN_BUTTONS:
+                button = self.page.get_by_role("button", name=label)
+                if await button.count():
+                    try:
+                        await button.first.click(timeout=3000)
+                    except Exception:
+                        await button.first.click(force=True, timeout=1500)
                     return
-            except Exception:
-                return
+            leave_btn = self.page.locator('button[aria-label*="Leave call" i]')
+            if await leave_btn.count() > 0:
+                try:
+                    if await leave_btn.first.is_visible():
+                        return
+                except Exception:
+                    return
+            if time.monotonic() >= deadline:
+                break
+            await asyncio.sleep(0.25)
         raise RuntimeError("Join button not found")
 
-    async def _wait_until_admitted(self) -> bool:
+    async def _wait_until_admitted(self, url: str = "") -> bool:
         started = time.monotonic()
         deadline = started + self.settings.meeting.lobby_timeout_s
+        next_join_retry = started + 3.5
+        lobby_since: float | None = None
+        reloads = 0
         while time.monotonic() < deadline:
+            if self.ended_event.is_set():
+                return False
             try:
                 if await self.page.locator("[data-ba-in-call='true']").count() > 0:
                     return True
@@ -835,23 +911,100 @@ class GoogleMeetAdapter:
                     body_text = await self.page.inner_text("body")
                 except Exception:
                     body_text = ""
-                for rejected in REJECTED_TEXTS:
-                    if rejected in body_text:
-                        logger.warning("Meet rejected join: %s", rejected)
-                        return False
+                is_real_meet = (self.page.url or "").startswith("https://meet.google.com/")
+                rejected_match = next((r for r in REJECTED_TEXTS if r in body_text), None)
+                if rejected_match:
+                    if (
+                        is_real_meet
+                        and url
+                        and rejected_match == "You can't join this video call"
+                        and reloads < 3
+                        and time.monotonic() - started < 45
+                    ):
+                        # Host may not have entered the meeting yet on a warm start; retry shortly.
+                        reloads += 1
+                        logger.info(
+                            "Meet not ready yet (%s); reloading %s (retry %s)",
+                            rejected_match,
+                            url,
+                            reloads,
+                        )
+                        await asyncio.sleep(3.0)
+                        if self.ended_event.is_set():
+                            return False
+                        await self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                        await self._wait_for_prejoin()
+                        await self._mute()
+                        await self._fill_name()
+                        await self._click_join()
+                        lobby_since = None
+                        next_join_retry = time.monotonic() + 3.5
+                        continue
+                    logger.warning("Meet rejected join: %s", rejected_match)
+                    return False
                 in_lobby = any(lobby in body_text for lobby in LOBBY_TEXTS)
-                if not in_lobby:
+                if in_lobby:
+                    if lobby_since is None:
+                        lobby_since = time.monotonic()
+                    elif (
+                        is_real_meet
+                        and url
+                        and reloads < 4
+                        and (
+                            (self._host_joined_nudge and time.monotonic() - lobby_since >= 4.0)
+                            or (time.monotonic() - lobby_since >= 25.0)
+                        )
+                    ):
+                        # Re-knock so a host who joined after our first knock sees the Admit prompt.
+                        self._host_joined_nudge = False
+                        reloads += 1
+                        logger.info("re-knocking on %s (attempt %s)", url, reloads)
+                        await self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                        await self._wait_for_prejoin()
+                        await self._mute()
+                        await self._fill_name()
+                        await self._click_join()
+                        lobby_since = time.monotonic()
+                        next_join_retry = time.monotonic() + 3.5
+                        continue
+                else:
+                    lobby_since = None
                     has_captions_btn = (
                         await self.page.get_by_role("button", name=TURN_ON_CAPTIONS).count() > 0
                         or await self.page.get_by_role("button", name=TURN_OFF_CAPTIONS).count() > 0
+                        or await self.page.locator(
+                            f'button[aria-label*="{TURN_ON_CAPTIONS}" i], '
+                            f'button[aria-label*="{TURN_OFF_CAPTIONS}" i], '
+                            f'[role="button"][aria-label*="{TURN_ON_CAPTIONS}" i], '
+                            f'[role="button"][aria-label*="{TURN_OFF_CAPTIONS}" i]'
+                        ).count()
+                        > 0
                     )
                     if has_captions_btn:
                         return True
-                    is_real_meet = (self.page.url or "").startswith("https://meet.google.com/")
                     if not is_real_meet:
                         leave_btn = self.page.get_by_role("button", name=LEAVE_CALL)
                         if await leave_btn.count() > 0 and await leave_btn.first.is_visible():
                             return True
+                    elif time.monotonic() >= next_join_retry:
+                        await self._dismiss_prejoin_prompts()
+                        for label in JOIN_BUTTONS:
+                            btn = self.page.get_by_role("button", name=label)
+                            if await btn.count() > 0:
+                                try:
+                                    visible = await btn.first.is_visible()
+                                    enabled = await btn.first.is_enabled()
+                                    if visible and enabled:
+                                        await self._fill_name()
+                                        await self._mute()
+                                        try:
+                                            await btn.first.click(timeout=2000)
+                                        except Exception:
+                                            await btn.first.click(force=True, timeout=1500)
+                                        break
+                                except Exception:
+                                    pass
+                        next_join_retry = time.monotonic() + 3.5
             except Exception:
                 pass
             await asyncio.sleep(0.3)
