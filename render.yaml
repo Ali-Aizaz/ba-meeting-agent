@@ -15,7 +15,7 @@ services:
       - key: BA_LLM__API_KEY
         sync: false
       - key: BA_LLM__MODEL
-        value: gpt-5.5
+        value: gpt-6-luna
       - key: BA_NOTION__TOKEN
         sync: false
       - key: BA_NOTION__DATABASES__SUMMARY

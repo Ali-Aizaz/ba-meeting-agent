@@ -76,7 +76,7 @@ The image is Playwright’s Python image plus Xvfb. It does not install a GPU ru
 Render uses the same image. Chromium needs the Standard plan (2 GB RAM) or larger. [render.yaml](render.yaml) is a Blueprint: web service, one instance, health check on `/status`, and a 1 GB disk at `/var/data` for the browser profile and `meeting.db`.
 
 1. Push this repo and in the Render dashboard choose **New → Blueprint**. Point it at `render.yaml`.
-2. Fill in `MEET_URL`, `BA_LLM__API_KEY`, `BA_NOTION__TOKEN`, `BA_NOTION__DATABASES__SUMMARY`, and `BA_NOTION__DATABASES__TASKS` when Render asks. Change `BA_LLM__MODEL` if the key is not for `gpt-5.5`.
+2. Fill in `MEET_URL`, `BA_LLM__API_KEY`, `BA_NOTION__TOKEN`, `BA_NOTION__DATABASES__SUMMARY`, and `BA_NOTION__DATABASES__TASKS` when Render asks. Change `BA_LLM__MODEL` if the key is not for `gpt-6-luna`.
 3. After the deploy, open `/status` on the service URL. The host still has to admit **TechSol BA**. Render sets join mode to `guest` because the instance has no display for a Google sign-in.
 
 Change `MEET_URL` and redeploy to join a different meeting. The first image build is large. If the process is killed with no Python traceback, move the plan to Pro (4 GB). Google sometimes blocks data-center browsers; the logs then show `Not admitted` or `Join button not found`.

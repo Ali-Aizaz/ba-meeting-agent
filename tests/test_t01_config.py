@@ -34,7 +34,7 @@ def test_t01_u1_yaml_defaults(monkeypatch) -> None:
     assert settings.trigger.pause_wait_s == 5
     assert settings.trigger.dedup_window_s == 3
     assert settings.llm.provider == "openai"
-    assert settings.llm.model == "gpt-5.5"
+    assert settings.llm.model == "gpt-6-luna"
     assert settings.llm.timeout_s == 25
     assert settings.llm.base_url == "https://api.openai.com/v1"
     assert settings.knowledge.dir == "data/knowledge"

@@ -33,7 +33,7 @@ class OpenAIResponsesClient:
         settings: Settings | None = None,
         *,
         api_key: str = "",
-        model: str = "gpt-5.5",
+        model: str = "gpt-6-luna",
         base_url: str = "https://api.openai.com/v1",
         timeout_s: float = 25.0,
     ) -> None:

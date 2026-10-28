@@ -36,7 +36,7 @@ const STOP_WAIT_TIMEOUT_MS = 10_000;
 const STOP_POLL_INTERVAL_MS = 500;
 const STORAGE_MEET_URL_KEY = "meet_url";
 const STORAGE_ENV_SIG_KEY = "env_sig";
-const WORKER_BUILD_SIG = "v7";
+const WORKER_BUILD_SIG = "v8";
 const MEET_HOST = ["meet", "google", "com"].join(".");
 const MEET_CODE_PATH = /^(?:\/_?meet)?\/([a-z]{3}-[a-z]{4}-[a-z]{3})(?:$|[/?#])/i;
 
@@ -53,7 +53,7 @@ const CONTAINER_ENV: Record<string, string> = {
   BA_BROWSER__HEADLESS: "false",
   BA_BROWSER__KEEP_ALIVE: "true",
   BA_BROWSER__RECEIVE_VIDEO: "false",
-  BA_LLM__MODEL: "gpt-5.5",
+  BA_LLM__MODEL: "gpt-6-luna",
 };
 
 export class BaContainer extends Container<Env> {
@@ -234,7 +234,7 @@ export class BaContainer extends Container<Env> {
       return jsonResponse({ ok: false, error: "Invalid Google Meet code URL" }, 400);
     }
 
-    const currentEnvSig = `${WORKER_BUILD_SIG}:${(this.env.BA_MEETING__GOOGLE_COOKIES_B64 || "").length}`;
+    const currentEnvSig = `${WORKER_BUILD_SIG}:${this.env.BA_LLM__MODEL || CONTAINER_ENV.BA_LLM__MODEL}:${(this.env.BA_MEETING__GOOGLE_COOKIES_B64 || "").length}`;
     const previousEnvSig = await this.ctx.storage.get<string>(STORAGE_ENV_SIG_KEY);
     const previousUrl = await this.ctx.storage.get<string>(STORAGE_MEET_URL_KEY);
     const state = await this.getState();
