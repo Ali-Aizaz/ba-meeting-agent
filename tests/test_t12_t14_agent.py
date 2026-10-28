@@ -282,3 +282,34 @@ async def test_t12_llm_failure_fallback_answers_knowledge_digest_and_tasks() -> 
     assert len(created) == 1
     assert created[0].owner == "Ali"
     assert poster.posts[-1][1] is PostReason.CONFIRMATION
+
+
+@pytest.mark.asyncio
+async def test_t12_activity_events_emitted_during_agent_actions() -> None:
+    activities: list[tuple[str, str]] = []
+
+    async def search_cars(query: str) -> WebResult:
+        return WebResult(text="Listed on the manufacturer page.", urls=["https://example.com/rav4"])
+
+    agent, _poster, _created = _agent(
+        "The current price is on the manufacturer page. https://example.com/rav4",
+        search_cars,
+    )
+    agent.on_activity = lambda text, kind: activities.append((text, kind))
+
+    await agent.handle(_event(QUESTION, trigger_id="t_act_q"))
+    kinds = [kind for _text, kind in activities]
+    texts = [text.lower() for text, _kind in activities]
+    assert "working" in kinds
+    assert kinds[-1] == "success"
+    assert any("searching knowledge base" in t for t in texts)
+    assert any("searching web" in t for t in texts)
+    assert any("thinking" in t for t in texts)
+    assert any("posting reply" in t for t in texts)
+    assert any("replied to sara" in t for t in texts)
+
+    activities.clear()
+    await agent.handle(_event("", trigger_id="t_act_empty"))
+    assert any("asking for clarification" in t.lower() for t, _k in activities)
+    assert activities[-1][1] == "info"
+    assert "follow-up" in activities[-1][0].lower()

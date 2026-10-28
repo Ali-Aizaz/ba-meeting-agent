@@ -91,6 +91,20 @@
         color: #cbd5e1;
         word-break: break-word;
       }
+      .activity-log {
+        margin-top: 8px;
+        padding: 8px 10px;
+        border-radius: 6px;
+        background: #0b1120;
+        border: 1px solid #1e293b;
+        font-size: 11px;
+        line-height: 1.45;
+        color: #94a3b8;
+        max-height: 110px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
     </style>
   </head>
   <body>
@@ -140,6 +154,7 @@
     </button>
 
     <div id="statusBox" class="status-box">Status: Ready</div>
+    <div id="activityBox" class="activity-log">Activity: No actions yet.</div>
 
     <script src="popup.js"></script>
   </body>

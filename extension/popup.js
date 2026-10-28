@@ -15,9 +15,64 @@ const autoAdmitCheckbox = document.getElementById("autoAdmit");
 const saveBtn = document.getElementById("saveBtn");
 const summonBtn = document.getElementById("summonBtn");
 const statusBox = document.getElementById("statusBox");
+const activityBox = document.getElementById("activityBox");
 
 function setStatus(text) {
   statusBox.textContent = text;
+}
+
+function renderActivity(response) {
+  if (!activityBox) return;
+  if (!response || !response.ok || response.idle) {
+    activityBox.textContent = "Activity: Waiting for active meeting…";
+    return;
+  }
+  const lines = [];
+  if (response.activity) {
+    lines.push(`⏳ Working: ${response.activity}`);
+  }
+  const events = Array.isArray(response.events) ? response.events : [];
+  for (const ev of events.slice(-6).reverse()) {
+    if (ev && ev.text && ev.text !== response.activity) {
+      const icon =
+        ev.kind === "success"
+          ? "✓"
+          : ev.kind === "error"
+            ? "✗"
+            : ev.kind === "working"
+              ? "⋯"
+              : "•";
+      lines.push(`${icon} ${ev.text}`);
+    }
+  }
+  activityBox.textContent =
+    lines.length > 0 ? lines.join("\n") : "Activity: Listening in call (say 'Hey BA…')";
+}
+
+function refreshWorkerStatus(sessionSummary = "") {
+  chrome.runtime.sendMessage({ type: "CHECK_STATUS" }, (response) => {
+    if (chrome.runtime.lastError || !response) return;
+    if (!response.ok) {
+      setStatus(
+        sessionSummary
+          ? `Worker unreachable (${response.error || "error"}) | ${sessionSummary}`
+          : `Worker error: ${response.error || "unreachable"}`,
+      );
+      return;
+    }
+    if (response.idle) {
+      setStatus(
+        sessionSummary
+          ? `Worker connected ✓ (Idle) | ${sessionSummary}`
+          : "Worker connected ✓ (Idle — open a Google Meet to auto-start)",
+      );
+    } else {
+      setStatus(
+        `Worker active ✓ | Meet: ${response.meet_url || "active"} | captions: ${Boolean(response.captions_enabled)} | chat: ${Boolean(response.chat_enabled)}`,
+      );
+    }
+    renderActivity(response);
+  });
 }
 
 async function loadPopup() {
@@ -51,28 +106,8 @@ async function loadPopup() {
     setStatus("Checking Cloudflare Worker status…");
   }
 
-  chrome.runtime.sendMessage({ type: "CHECK_STATUS" }, (response) => {
-    if (chrome.runtime.lastError || !response) return;
-    if (!response.ok) {
-      setStatus(
-        sessionSummary
-          ? `Worker unreachable (${response.error || "error"}) | ${sessionSummary}`
-          : `Worker error: ${response.error || "unreachable"}`,
-      );
-      return;
-    }
-    if (response.idle) {
-      setStatus(
-        sessionSummary
-          ? `Worker connected ✓ (Idle) | ${sessionSummary}`
-          : "Worker connected ✓ (Idle — open a Google Meet to auto-start)",
-      );
-    } else {
-      setStatus(
-        `Worker active ✓ | Meet: ${response.meet_url || "active"} | captions: ${Boolean(response.captions_enabled)} | chat: ${Boolean(response.chat_enabled)}`,
-      );
-    }
-  });
+  refreshWorkerStatus(sessionSummary);
+  setInterval(() => refreshWorkerStatus(sessionSummary), 2000);
 }
 
 async function saveSettings() {

@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import socket
 import socketserver
 import threading
+import time
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from ba_agent.config import StartupError, validate_meet_url
+
+logger = logging.getLogger("ba_agent.activity")
 
 _orig_getfqdn = socket.getfqdn
 
@@ -39,24 +43,71 @@ class StatusState:
         self,
         meeting_id: str = "",
         on_join: Callable[[str], None] | None = None,
+        on_activity: Callable[[str, str], None] | None = None,
     ) -> None:
+        self._lock = threading.Lock()
         self.meeting_id = meeting_id
         self.captions_enabled = False
         self.chat_enabled = False
         self.stage = "idle"
         self.last_error = ""
+        self.activity = ""
+        self.activity_kind = "info"
+        self.activity_seq = 0
+        self.events: list[dict] = []
         self.on_join = on_join
+        self.on_activity = on_activity
+
+    def record_activity(
+        self,
+        text: str,
+        kind: str = "working",
+        *,
+        clear_active: bool = False,
+    ) -> dict:
+        cleaned = text.strip()
+        with self._lock:
+            self.activity_seq += 1
+            entry = {
+                "seq": self.activity_seq,
+                "ts": round(time.time(), 2),
+                "kind": kind,
+                "text": cleaned,
+            }
+            if cleaned:
+                self.events.append(entry)
+                if len(self.events) > 25:
+                    self.events = self.events[-25:]
+            if clear_active or kind in {"success", "error"} or not cleaned:
+                self.activity = ""
+                self.activity_kind = kind
+            else:
+                self.activity = cleaned
+                self.activity_kind = kind
+        if cleaned:
+            logger.info("activity [%s]: %s", kind, cleaned)
+        if self.on_activity is not None and cleaned:
+            try:
+                self.on_activity(cleaned, kind)
+            except Exception:
+                pass
+        return entry
 
     def as_dict(self) -> dict:
-        payload: dict = {
-            "meeting_id": self.meeting_id,
-            "captions_enabled": self.captions_enabled,
-            "chat_enabled": self.chat_enabled,
-            "stage": self.stage,
-        }
-        if self.last_error:
-            payload["last_error"] = self.last_error
-        return payload
+        with self._lock:
+            payload: dict = {
+                "meeting_id": self.meeting_id,
+                "captions_enabled": self.captions_enabled,
+                "chat_enabled": self.chat_enabled,
+                "stage": self.stage,
+                "activity": self.activity,
+                "activity_kind": self.activity_kind,
+                "activity_seq": self.activity_seq,
+                "events": list(self.events[-15:]),
+            }
+            if self.last_error:
+                payload["last_error"] = self.last_error
+            return payload
 
 
 def start_status_server(state: StatusState, host: str, port: int) -> ThreadingHTTPServer | None:

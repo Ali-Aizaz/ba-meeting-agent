@@ -49,6 +49,7 @@ class AgentLoop:
         min_score: float,
         timeout_s: float,
         persona: str | None = None,
+        on_activity: Callable[[str, str], None] | None = None,
     ) -> None:
         self.knowledge = knowledge
         self.search_cars = search_cars
@@ -63,7 +64,15 @@ class AgentLoop:
         self.min_score = min_score
         self.timeout_s = timeout_s
         self.persona = persona if persona is not None else read_prompt("persona.md")
+        self.on_activity = on_activity
         self.pending_task = None
+
+    def _emit_activity(self, text: str, kind: str = "working") -> None:
+        if self.on_activity is not None:
+            try:
+                self.on_activity(text, kind)
+            except Exception:
+                pass
 
     async def handle(self, event: TriggerEvent) -> None:
         started = time.perf_counter()
@@ -72,17 +81,35 @@ class AgentLoop:
         text = ""
         reason = PostReason.REPLY
         should_leave = False
+        had_error = False
         try:
             text, reason, model_at, tool_at, should_leave = await self._dispatch(event)
         except Exception:
             logger.exception("reply failed")
+            had_error = True
             text = "I couldn't complete that."
             reason = PostReason.REPLY
+            self._emit_activity(f"Could not complete request from {event.speaker}", "error")
         try:
             if text:
+                self._emit_activity("Posting reply in Google Meet chat…", "working")
                 await self.post(text, reason, event.trigger_id)
+                if had_error:
+                    self._emit_activity(f"Error reply posted for {event.speaker}", "error")
+                elif reason is PostReason.CONFIRMATION:
+                    self._emit_activity(f"Task saved to Notion for {event.speaker} ✓", "success")
+                elif reason is PostReason.MEETING_SAVED:
+                    self._emit_activity("Meeting notes saved to Notion ✓", "success")
+                elif not event.question.strip() or self.pending_task is not None:
+                    self._emit_activity(
+                        f"Waiting for {event.speaker}'s follow-up (20s window)…",
+                        "info",
+                    )
+                else:
+                    self._emit_activity(f"Replied to {event.speaker} ✓", "success")
         finally:
             if should_leave:
+                self._emit_activity("Leaving Google Meet call…", "info")
                 await self.leave()
             posted = time.perf_counter()
             log_timing(
@@ -95,19 +122,36 @@ class AgentLoop:
     async def _dispatch(self, event: TriggerEvent):
         started = time.perf_counter()
         if event.followup and self.pending_task is not None:
+            self._emit_activity(
+                f'Processing follow-up from {event.speaker}: "{event.question[:60]}"…',
+                "working",
+            )
             text, reason, m_at, t_at = await self._complete_pending(event, started)
             return text, reason, m_at, t_at, False
         question = event.question.strip()
         if not question:
+            self._emit_activity(
+                f'Heard "Hey BA" from {event.speaker} — asking for clarification…',
+                "working",
+            )
             self.trigger.arm_followup(event.speaker, event.t_detected)
             return CLARIFY, PostReason.REPLY, started, started, False
         if _is_leave(question):
+            self._emit_activity(
+                "Summarizing & saving meeting notes to Notion before leaving…",
+                "working",
+            )
             url = await self._save()
             return _saved(url), PostReason.MEETING_SAVED, started, started, True
         if _is_save(question):
+            self._emit_activity("Summarizing & saving meeting notes to Notion…", "working")
             url = await self._save()
             return _saved(url), PostReason.MEETING_SAVED, started, started, False
         if is_task_request(question):
+            self._emit_activity(
+                f'Parsing task request from {event.speaker}: "{question[:60]}"…',
+                "working",
+            )
             text, reason, m_at, t_at = await self._requested_task(question, event, started)
             return text, reason, m_at, t_at, False
         text, reason, m_at, t_at = await self._answer(question, event, started)
@@ -118,6 +162,10 @@ class AgentLoop:
         self.pending_task = None
         if not record.owner or record.due is None:
             return STILL_NEED, PostReason.REPLY, started, started
+        self._emit_activity(
+            f"Creating task in Notion: {record.task} ({record.owner})…",
+            "working",
+        )
         result = await self.create_task(record)
         return result.message, PostReason.CONFIRMATION, started, time.perf_counter()
 
@@ -132,15 +180,21 @@ class AgentLoop:
             self.pending_task = record
             self.trigger.arm_followup(event.speaker, event.t_detected)
             return _ask(record), PostReason.REPLY, started, started
+        self._emit_activity(
+            f"Creating task in Notion: {record.task} ({record.owner})…",
+            "working",
+        )
         result = await self.create_task(record)
         return result.message, PostReason.CONFIRMATION, started, time.perf_counter()
 
     async def _answer(self, question: str, event: TriggerEvent, started: float):
+        self._emit_activity(f'Searching knowledge base for "{question[:60]}"…', "working")
         hits = self.knowledge.search(question)
         web: WebResult | None = None
         car = is_car_question(question, hits)
         tool_at = time.perf_counter()
         if car and should_search_web(question, hits, self.min_score):
+            self._emit_activity(f'Searching web for "{question[:60]}"…', "working")
             try:
                 web = await self.search_cars(question)
             except AssertionError:
@@ -152,6 +206,7 @@ class AgentLoop:
         if car and not hits and not (web and web.useful):
             return NOT_SURE, PostReason.REPLY, started, tool_at
         model_at = time.perf_counter()
+        self._emit_activity(f"Thinking — generating reply for {event.speaker}…", "working")
         prompt = _prompt(self.persona, self.digest(), question, hits, web, car)
         try:
             first = await self.llm.respond(
@@ -169,6 +224,10 @@ class AgentLoop:
                     return tool_outcome
                 prompt = _prompt(self.persona, self.digest(), question, hits, web, car)
                 if not first.text or len(hits) > before_hits:
+                    self._emit_activity(
+                        f"Synthesizing answer with knowledge results for {event.speaker}…",
+                        "working",
+                    )
                     first = await self.llm.respond(
                         prompt,
                         tools=None,
@@ -180,6 +239,7 @@ class AgentLoop:
                 return text, PostReason.REPLY, model_at, tool_at
             if reply_status(first.text) == "allow":
                 return first.text, PostReason.REPLY, model_at, tool_at
+            self._emit_activity("Verifying source citations for reply…", "working")
             second = await self.llm.respond(
                 prompt + "\n\nCite a source you were given, or say you are not sure. "
                 "Do not invent a number.",
@@ -192,6 +252,7 @@ class AgentLoop:
             raise
         except Exception:
             logger.warning("llm.respond failed; using deterministic fallback", exc_info=True)
+            self._emit_activity(f"Preparing fallback answer for {event.speaker}…", "working")
             return await self._fallback_answer(question, event, hits, web, car, model_at, tool_at)
 
     async def _fallback_answer(
@@ -270,6 +331,7 @@ class AgentLoop:
         seen_sources = {hit.source for hit in hits}
         for call in calls:
             if call.name == "save_meeting":
+                self._emit_activity("Saving meeting notes to Notion…", "working")
                 url = await self._save()
                 return _saved(url), PostReason.MEETING_SAVED, model_at, time.perf_counter()
             if call.name == "create_task":
@@ -291,11 +353,16 @@ class AgentLoop:
                     self.pending_task = record if task_text else None
                     self.trigger.arm_followup(event.speaker, event.t_detected)
                     return _ask(self.pending_task), PostReason.REPLY, model_at, time.perf_counter()
+                self._emit_activity(
+                    f"Creating task in Notion: {task_text} ({owner})…",
+                    "working",
+                )
                 result = await self.create_task(record)
                 return result.message, PostReason.CONFIRMATION, model_at, time.perf_counter()
             if call.name == "search_knowledge":
                 query = str((call.arguments or {}).get("query") or "").strip()
                 if query:
+                    self._emit_activity(f'Searching knowledge base for "{query[:50]}"…', "working")
                     for extra in self.knowledge.search(query):
                         if extra.source not in seen_sources:
                             seen_sources.add(extra.source)

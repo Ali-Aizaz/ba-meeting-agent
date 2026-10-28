@@ -93,7 +93,17 @@ async def run_join(settings: Settings, url: str) -> None:
 
         loop.call_soon_threadsafe(_schedule)
 
-    status = StatusState("", on_join=on_join_request)
+    def on_activity_update(text: str, kind: str) -> None:
+        show_toast = getattr(adapter, "show_toast", None)
+        if callable(show_toast):
+            try:
+                loop.call_soon_threadsafe(
+                    lambda: asyncio.create_task(show_toast(text, kind))
+                )
+            except RuntimeError:
+                pass
+
+    status = StatusState("", on_join=on_join_request, on_activity=on_activity_update)
     server = start_status_server(status, settings.server.status_host, settings.server.status_port)
     keep_alive = bool(settings.browser.keep_alive) and "PYTEST_CURRENT_TEST" not in os.environ
     try:
@@ -218,10 +228,19 @@ async def _run_single_meeting(
             today=lambda: today_in(settings.meeting.timezone),
             min_score=settings.knowledge.min_score,
             timeout_s=settings.llm.timeout_s,
+            on_activity=status.record_activity,
         )
         bus = EventBus()
         pump = CaptionPump(adapter.drain_caption_frames, Stabilizer(settings.captions.stable_ms))
-        extractor = _Extractor(settings, llm, store, poster, notion, on_change=notes_dirty.set)
+        extractor = _Extractor(
+            settings,
+            llm,
+            store,
+            poster,
+            notion,
+            on_change=notes_dirty.set,
+            on_activity=status.record_activity,
+        )
         consent_posted = store.get_meta("consent_posted") == "1"
         attempts = 0
         while attempts < settings.browser.rejoin_limit:
@@ -264,6 +283,7 @@ async def _run_single_meeting(
                     addressed_caption_ids,
                     notion=notion,
                     notes_dirty=notes_dirty,
+                    on_activity=status.record_activity,
                 )
                 break
             except Exception as exc:
@@ -310,6 +330,7 @@ async def _loops(
     *,
     notion: NotionService | None = None,
     notes_dirty: asyncio.Event | None = None,
+    on_activity=None,
 ) -> None:
     trigger_queue: asyncio.Queue[TriggerEvent | None] = asyncio.Queue()
 
@@ -332,13 +353,28 @@ async def _loops(
             notes_dirty.set()
         await bus.publish("caption_committed", line)
         events = trigger.on_line(speaker, raw.text, "speech", raw.start_s, line.id)
+        has_pending = (
+            getattr(trigger, "pending", None) is not None
+            or getattr(trigger, "_pending", None) is not None
+        )
         if addressed_caption_ids is not None and (
             events
             or is_addressed_line(raw.text)
-            or getattr(trigger, "_pending", None) is not None
+            or has_pending
         ):
             addressed_caption_ids.add(line.id)
+        if has_pending and not events and on_activity is not None:
+            on_activity(
+                f'Heard "Hey BA" from {speaker} — listening for question (5s)…',
+                "working",
+            )
         for event in events:
+            if on_activity is not None:
+                preview = event.question or "Hey BA"
+                on_activity(
+                    f'Heard {speaker}: "{preview[:60]}" — processing…',
+                    "working",
+                )
             trigger_queue.put_nowait(event)
         if not events and not is_addressed_line(raw.text):
             extractor.note(line)
@@ -383,6 +419,12 @@ async def _loops(
                 if addressed_caption_ids is not None and (events or is_addressed_line(text)):
                     addressed_caption_ids.add(line.id)
                 for event in events:
+                    if on_activity is not None:
+                        preview = event.question or "Hey BA"
+                        on_activity(
+                            f'Chat from {speaker}: "{preview[:60]}" — processing…',
+                            "working",
+                        )
                     trigger_queue.put_nowait(event)
                 if not events and not is_addressed_line(text):
                     extractor.note(line)
@@ -538,13 +580,24 @@ def _build_notion(settings: Settings, store: MeetingStore) -> NotionService | No
 
 
 class _Extractor:
-    def __init__(self, settings, llm, store, poster, notion, *, on_change=None) -> None:
+    def __init__(
+        self,
+        settings,
+        llm,
+        store,
+        poster,
+        notion,
+        *,
+        on_change=None,
+        on_activity=None,
+    ) -> None:
         self.settings = settings
         self.llm = llm
         self.store = store
         self.poster = poster
         self.notion = notion
         self.on_change = on_change
+        self.on_activity = on_activity
         self.queue: asyncio.Queue = asyncio.Queue()
         self.recent: list[CaptionLine] = []
         self.seen: set[str] = set()
@@ -584,6 +637,11 @@ class _Extractor:
                 ]
                 if matching:
                     line = matching[-1]
+                    if self.on_activity is not None:
+                        self.on_activity(
+                            f"Checking overheard action item from {line.speaker}…",
+                            "working",
+                        )
                     try:
                         window = "\n".join(f"{item.speaker}: {item.text}" for item in self.recent)
                         prompt = read_prompt("tasks.md") + "\n\n" + window
@@ -611,7 +669,14 @@ class _Extractor:
                         )
                     if records:
                         self.recent.clear()
+                    elif self.on_activity is not None:
+                        self.on_activity("", "info")
                     for record in records:
+                        if self.on_activity is not None:
+                            self.on_activity(
+                                f"Creating overheard task in Notion: {record.task} ({record.owner})…",
+                                "working",
+                            )
                         result = await self.notion.create_task(record)
                         if result.page_id:
                             record.notion_page_id = result.page_id
@@ -619,5 +684,10 @@ class _Extractor:
                             if self.on_change is not None:
                                 self.on_change()
                         await self.poster.post(result.message, PostReason.CONFIRMATION)
+                        if self.on_activity is not None:
+                            self.on_activity(
+                                f"Overheard task saved: {record.task} ✓",
+                                "success",
+                            )
             if stop_after or self._stopped:
                 return

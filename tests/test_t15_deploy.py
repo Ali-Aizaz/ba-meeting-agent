@@ -57,8 +57,14 @@ def test_t15_render_blueprint_is_a_docker_service_without_secrets() -> None:
 
 def test_t15_status_responds_on_root_and_status() -> None:
     joined_urls: list[str] = []
-    state = StatusState("m1", on_join=joined_urls.append)
+    activity_seen: list[tuple[str, str]] = []
+    state = StatusState(
+        "m1",
+        on_join=joined_urls.append,
+        on_activity=lambda text, kind: activity_seen.append((text, kind)),
+    )
     state.captions_enabled = True
+    state.record_activity('Searching knowledge base for "what is a hybrid?"…', "working")
     server = start_status_server(state, "127.0.0.1", 0)
     assert server is not None
     port = server.server_address[1]
@@ -66,8 +72,20 @@ def test_t15_status_responds_on_root_and_status() -> None:
         for path in ("/", "/status"):
             response = httpx.get(f"http://127.0.0.1:{port}{path}", timeout=2)
             assert response.status_code == 200
-            assert response.json()["meeting_id"] == "m1"
-            assert response.json()["captions_enabled"] is True
+            body = response.json()
+            assert body["meeting_id"] == "m1"
+            assert body["captions_enabled"] is True
+            assert body["activity"] == 'Searching knowledge base for "what is a hybrid?"…'
+            assert body["activity_kind"] == "working"
+            assert body["activity_seq"] == 1
+            assert len(body["events"]) == 1
+        state.record_activity("Replied to Sara ✓", "success")
+        done_body = httpx.get(f"http://127.0.0.1:{port}/status", timeout=2).json()
+        assert done_body["activity"] == ""
+        assert done_body["activity_kind"] == "success"
+        assert done_body["activity_seq"] == 2
+        assert len(done_body["events"]) == 2
+        assert len(activity_seen) == 2
         join_res = httpx.post(
             f"http://127.0.0.1:{port}/join",
             json={"url": "https://meet.google.com/abc-defg-hij"},

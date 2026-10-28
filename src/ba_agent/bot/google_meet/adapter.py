@@ -124,6 +124,7 @@ class GoogleMeetAdapter:
                 "--use-fake-device-for-media-stream",
                 "--autoplay-policy=no-user-gesture-required",
                 "--disable-dev-shm-usage",
+                "--mute-audio",
             ]
             if self.settings.browser.no_sandbox:
                 args.append("--no-sandbox")
@@ -635,6 +636,17 @@ class GoogleMeetAdapter:
         folder = resolve_path("data/debug")
         folder.mkdir(parents=True, exist_ok=True)
         await self.page.screenshot(path=str(folder / f"{label}.png"))
+
+    async def show_toast(self, text: str, kind: str = "info") -> None:
+        if self.page is None:
+            return
+        try:
+            await self.page.evaluate(
+                "([msg, tone]) => { if (window.__baShowToast) window.__baShowToast(msg, tone); }",
+                [text, kind],
+            )
+        except Exception:
+            pass
 
     async def chat_messages(self):
         while not self.ended_event.is_set():

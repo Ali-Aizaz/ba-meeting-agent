@@ -16,6 +16,13 @@ PAGE_OBSERVER_JS = r"""
   } catch (err) {}
 
   try {
+    if (typeof window !== "undefined" && "speechSynthesis" in window && window.speechSynthesis) {
+      window.speechSynthesis.speak = function () {};
+      window.speechSynthesis.cancel = function () {};
+    }
+  } catch (err) {}
+
+  try {
     function silenceTrack(track) {
       if (!track) return;
       try {
@@ -69,7 +76,7 @@ PAGE_OBSERVER_JS = r"""
       navigator.mediaDevices.enumerateDevices = function () {
         return origEnumerate.apply(this, arguments).then((devices) =>
           Array.isArray(devices)
-            ? devices.filter((d) => !d || d.kind !== "videoinput")
+            ? devices.filter((d) => !d || (d.kind !== "videoinput" && d.kind !== "audiooutput"))
             : devices
         );
       };
@@ -321,6 +328,119 @@ PAGE_OBSERVER_JS = r"""
     attachChat();
     attachCaptions();
   }
+
+  let toastTimer = null;
+  const recentSteps = [];
+
+  window.__baShowToast = (text, kind = "info") => {
+    try {
+      if (!document.body) return;
+      if (!document.getElementById("ba-agent-toast-style")) {
+        const style = document.createElement("style");
+        style.id = "ba-agent-toast-style";
+        style.textContent = `
+          @keyframes ba-toast-spin {
+            to { transform: rotate(360deg); }
+          }
+          #ba-agent-toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 2147483647;
+            max-width: 380px;
+            padding: 11px 14px;
+            border-radius: 10px;
+            font-family: system-ui, -apple-system, sans-serif;
+            font-size: 13px;
+            color: #f8fafc;
+            box-shadow: 0 12px 28px rgba(0, 0, 0, 0.4);
+            border: 1px solid rgba(148, 163, 184, 0.25);
+            transition: opacity 0.25s ease, transform 0.2s ease;
+            pointer-events: none;
+          }
+          #ba-agent-toast .ba-toast-row {
+            display: flex;
+            align-items: center;
+            gap: 9px;
+            font-weight: 600;
+            line-height: 1.35;
+          }
+          #ba-agent-toast .ba-toast-spinner {
+            width: 14px;
+            height: 14px;
+            border: 2px solid rgba(248, 250, 252, 0.3);
+            border-top-color: #38bdf8;
+            border-radius: 50%;
+            animation: ba-toast-spin 0.75s linear infinite;
+            flex-shrink: 0;
+          }
+          #ba-agent-toast .ba-toast-sub {
+            margin-top: 5px;
+            font-size: 11px;
+            color: #cbd5e1;
+            opacity: 0.85;
+            line-height: 1.35;
+          }
+        `;
+        (document.head || document.documentElement).appendChild(style);
+      }
+
+      let el = document.getElementById("ba-agent-toast");
+      if (!el) {
+        el = document.createElement("div");
+        el.id = "ba-agent-toast";
+        document.body.appendChild(el);
+      }
+
+      const cleaned = String(text || "").trim();
+      if (!cleaned) {
+        el.style.opacity = "0";
+        return;
+      }
+
+      if (recentSteps[recentSteps.length - 1] !== cleaned) {
+        recentSteps.push(cleaned);
+        if (recentSteps.length > 3) recentSteps.shift();
+      }
+
+      const backgrounds = {
+        working: "#0f172a",
+        info: "#1e293b",
+        success: "#14532d",
+        warn: "#78350f",
+        error: "#7f1d1d",
+      };
+      el.style.background = backgrounds[kind] || backgrounds.info;
+      el.style.opacity = "1";
+
+      el.textContent = "";
+      const row = document.createElement("div");
+      row.className = "ba-toast-row";
+      if (kind === "working") {
+        const spin = document.createElement("div");
+        spin.className = "ba-toast-spinner";
+        row.appendChild(spin);
+      }
+      const label = document.createElement("span");
+      label.textContent = `TechSol BA: ${cleaned}`;
+      row.appendChild(label);
+      el.appendChild(row);
+
+      if (recentSteps.length > 1) {
+        const sub = document.createElement("div");
+        sub.className = "ba-toast-sub";
+        sub.textContent = recentSteps.slice(0, -1).join(" → ");
+        el.appendChild(sub);
+      }
+
+      if (toastTimer) clearTimeout(toastTimer);
+      const ttl = kind === "working" ? 25000 : 5500;
+      toastTimer = setTimeout(() => {
+        if (el) el.style.opacity = "0";
+        if (kind !== "working") recentSteps.length = 0;
+      }, ttl);
+    } catch (err) {}
+  };
 
   window.__baHasChatRoot = () => Boolean(chatRoot());
   window.__baDrainChat = () => {

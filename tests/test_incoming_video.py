@@ -97,3 +97,18 @@ process.stdout.write(JSON.stringify(cases.map((sdp) => __baRejectVideoSdp(sdp)))
     assert result.returncode == 0, result.stderr.decode()
     got = json.loads(result.stdout.decode())
     assert got == [reject_incoming_video_sdp(sdp) for sdp in CASES]
+
+
+def test_browser_and_scripts_never_emit_sound_or_use_speakers() -> None:
+    from pathlib import Path
+
+    from ba_agent.bot.google_meet.scripts import PAGE_OBSERVER_JS
+
+    root = Path(__file__).resolve().parents[1]
+    adapter_src = (root / "src" / "ba_agent" / "bot" / "google_meet" / "adapter.py").read_text(
+        encoding="utf-8"
+    )
+    assert '"--mute-audio"' in adapter_src
+    assert "speechSynthesis.speak = function () {}" in PAGE_OBSERVER_JS
+    assert 'd.kind !== "audiooutput"' in PAGE_OBSERVER_JS
+    assert "silenceTrack" in PAGE_OBSERVER_JS
