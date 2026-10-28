@@ -272,11 +272,23 @@ _MEETING_PATTERNS = (
         r"\b(?:when\s+is\s+.+\s+due|what\s+is\s+the\s+(?:due\s+date|deadline|status)\s+(?:of|for))\b",
         re.I,
     ),
+    re.compile(
+        r"\b(?:what\s+(?:happened|was\s+said|was\s+discussed|are\s+we\s+discussing)|"
+        r"who\s+is\s+(?:here|attending|present)|participants?|attendees?|agenda)\b",
+        re.I,
+    ),
 )
 
 
 def is_meeting_question(query: str) -> bool:
     return any(pattern.search(query) is not None for pattern in _MEETING_PATTERNS)
+
+
+def has_car_topic(query: str) -> bool:
+    text = query.lower()
+    if re.search(r"\bmodel\s+[3ysx]\b", text):
+        return True
+    return any(re.search(rf"\b{re.escape(word)}\b", text) for word in _CAR_WORDS)
 
 
 def needs_current_fact(query: str) -> bool:
@@ -299,12 +311,7 @@ def is_car_question(query: str, hits: list[Chunk]) -> bool:
         return False
     if hits:
         return True
-    if _WEB_INTENT.search(query) is not None:
-        return True
-    text = query.lower()
-    if re.search(r"\bmodel\s+[3ysx]\b", text):
-        return True
-    return any(re.search(rf"\b{re.escape(word)}\b", text) for word in _CAR_WORDS)
+    return has_car_topic(query)
 
 
 def should_search_web(query: str, hits: list[Chunk], min_score: float) -> bool:
@@ -323,6 +330,6 @@ async def gather_car_context(
     """Search local notes first. Web search receives the question string only."""
     hits = knowledge.search(question)
     web: WebResult | None = None
-    if should_search_web(question, hits, min_score):
+    if is_car_question(question, hits) and should_search_web(question, hits, min_score):
         web = await search_cars(question)
     return hits, web

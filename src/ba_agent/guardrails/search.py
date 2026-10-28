@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from ba_agent.knowledge.policy import _CAR_WORDS
+from ba_agent.knowledge.policy import _CAR_WORDS, has_car_topic
 
 _INTERNAL_URL = re.compile(
     r"https?://(?:www\.)?(?:notion\.(?:so|site)|meet\.google\.com)/\S+",
@@ -59,6 +59,8 @@ def _participant_tokens(participants: list[str]) -> list[str]:
 
 def query_allowed(query: str, caption_lines: list[str], participants: list[str]) -> bool:
     lowered = query.lower()
+    if not has_car_topic(query):
+        return False
     if "notion.so" in lowered or "notion.site" in lowered or "meet.google.com" in lowered:
         return False
     if _TIMESTAMP.search(query) is not None or _DIGEST_MARKER.search(query) is not None:

@@ -98,3 +98,11 @@ def test_t13_generic_speaker_labels_do_not_block_car_search() -> None:
     assert query_allowed(q, [], participants) is True
     assert query_allowed("what car does Sara drive?", [], participants) is False
 
+
+def test_t13_non_car_web_search_queries_are_rejected() -> None:
+    assert query_allowed("what is the weather in London today?", [], []) is False
+    assert query_allowed("search the web for Bitcoin price in USD", [], []) is False
+    assert query_allowed("recipe for chocolate cake", [], []) is False
+    assert query_allowed("who won the UEFA Champions League?", [], []) is False
+
+

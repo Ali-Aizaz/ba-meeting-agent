@@ -12,7 +12,12 @@ from ba_agent.agent.timing import log_timing
 from ba_agent.captions.clock import format_meeting_time
 from ba_agent.config import read_prompt
 from ba_agent.guardrails.citations import NOT_SURE, finalize_reply, has_citation, reply_status
-from ba_agent.knowledge.policy import is_car_question, should_search_web
+from ba_agent.knowledge.policy import (
+    has_car_topic,
+    is_car_question,
+    is_meeting_question,
+    should_search_web,
+)
 from ba_agent.knowledge.search import Chunk, KnowledgeIndex
 from ba_agent.llm.tools import local_tools
 from ba_agent.models import CaptionLine, PostReason, TaskRecord, TriggerEvent, WebResult
@@ -31,6 +36,7 @@ logger = logging.getLogger("ba_agent.agent")
 
 CLARIFY = "Yes — what would you like me to do?"
 STILL_NEED = "I still need an owner and a due date."
+OFF_TOPIC = "I can only help with car and automotive questions or this meeting's notes and tasks."
 
 
 class AgentLoop:
@@ -228,6 +234,8 @@ class AgentLoop:
         if not car and self.fetch_db_context is not None:
             self._emit_activity("Fetching stored data from database…", "working")
         full_digest = await self._full_digest()
+        if _is_off_topic(question, full_digest, car):
+            return OFF_TOPIC, PostReason.REPLY, started, tool_at
         model_at = time.perf_counter()
         self._emit_activity(f"Thinking — generating reply for {event.speaker}…", "working")
         prompt = _prompt(self.persona, full_digest, question, hits, web, car)
@@ -396,7 +404,7 @@ class AgentLoop:
                             hits.append(extra)
             if call.name == "search_cars":
                 query = str((call.arguments or {}).get("query") or "").strip()
-                if query and (web is None or not web.useful):
+                if query and has_car_topic(query) and (web is None or not web.useful):
                     self._emit_activity(f'Searching web for "{query[:50]}"…', "working")
                     try:
                         web = await self.search_cars(query)
@@ -435,7 +443,9 @@ def _prompt(persona, digest, question, hits: list[Chunk], web: WebResult | None,
         if car
         else (
             "This is a question about the meeting or stored database records. "
-            "Use the meeting_digest and knowledge sections. Do not search the web."
+            "Use the meeting_digest and knowledge sections. Do not search the web. "
+            "If the question is unrelated to cars or the meeting, refuse and state that "
+            "you only help with car/automotive questions or this meeting's notes and tasks."
         )
     )
     return (
@@ -622,6 +632,9 @@ def _answer_from_digest(question: str, digest: str) -> str:
         if participants_line and not participants_line.lower().endswith("none"):
             return participants_line
 
+    if not is_meeting_question(question):
+        return OFF_TOPIC
+
     if transcript_lines:
         return f"From the meeting so far: {' | '.join(transcript_lines[-3:])}"
     if task_lines:
@@ -629,6 +642,30 @@ def _answer_from_digest(question: str, digest: str) -> str:
     if note_lines:
         return f"Stored meeting notes: {' | '.join(note_lines[:2])}"
     return "The meeting just started — nothing has been recorded yet."
+
+
+_GREETINGS = {"hello", "hi", "hey", "status", "help", "are you there", "can you hear me"}
+
+
+def _is_off_topic(question: str, digest: str, car: bool) -> bool:
+    if car:
+        return False
+    norm_q = question.lower().strip(" .,!?;:")
+    if not norm_q or norm_q in _GREETINGS:
+        return False
+    if is_meeting_question(question):
+        return False
+    raw_words = [
+        w.strip(".,!?;:\"'()[]")
+        for w in norm_q.split()
+        if len(w.strip(".,!?;:\"'()[]")) > 2
+    ]
+    keywords = [w for w in raw_words if w not in _DIGEST_STOP]
+    if keywords and digest:
+        digest_low = digest.lower()
+        if any(kw in digest_low for kw in keywords):
+            return False
+    return True
 
 
 def _rank_lines(lines: list[str], keywords: list[str], q_lower: str) -> list[str]:

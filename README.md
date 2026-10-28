@@ -42,7 +42,7 @@ flowchart TD
   searchCars -.-> dataflow
 ```
 
-Solid arrows are the running agent. Dashed arrows are extensions and are not built. Source: [docs/diagrams/architecture.mmd](docs/diagrams/architecture.mmd).
+Solid arrows are the running agent. Dashed arrows are extensions and are not built. Source: [docs/diagrams/architecture.mmd](docs/diagrams/architecture.mmd) · Interactive HTML diagrams: [docs/techsol-ba-architecture.html](docs/techsol-ba-architecture.html) & [docs/techsol-ba-extensions.html](docs/techsol-ba-extensions.html).
 
 ## Setup
 

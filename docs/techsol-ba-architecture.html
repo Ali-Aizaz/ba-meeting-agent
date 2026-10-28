@@ -67,6 +67,18 @@
       color: var(--bg);
       border-color: var(--text);
     }
+    .views a.ext-link {
+      font: inherit;
+      font-size: 13px;
+      font-weight: 500;
+      border: 1px solid var(--accent);
+      background: var(--fill);
+      color: var(--accent);
+      border-radius: 999px;
+      padding: 4px 12px;
+      text-decoration: none;
+      margin-left: auto;
+    }
     .frame {
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -163,9 +175,12 @@
     <div class="views" role="group" aria-label="Highlight a path">
       <button type="button" data-view-btn="system" aria-pressed="true">Whole system</button>
       <button type="button" data-view-btn="reply" aria-pressed="false">Hey BA reply</button>
+      <button type="button" data-view-btn="guardrails" aria-pressed="false">Guardrails flow</button>
       <button type="button" data-view-btn="task" aria-pressed="false">Overheard task</button>
       <button type="button" data-view-btn="save" aria-pressed="false">Save and leave</button>
       <button type="button" data-view-btn="boundary" aria-pressed="false">What leaves</button>
+      <button type="button" data-view-btn="extensions" aria-pressed="false">Extensions</button>
+      <a class="ext-link" href="techsol-ba-extensions.html">Extension Diagrams →</a>
     </div>
 
     <section class="frame" aria-label="TechSol BA architecture">
@@ -200,20 +215,22 @@
           <section>
             <div class="lane-head">
               <h3>Addressed loop</h3>
-              <p class="hint">Quiet until someone says “Hey BA”. Runs on a non-blocking async trigger queue.</p>
+              <p class="hint">Quiet until someone says “Hey BA”. Enforces topic, search, prompt, and citation guardrails before posting.</p>
             </div>
             <div class="row">
-              <div class="box"><button type="button" class="node" data-id="wake" data-hot="reply save" data-boundary="false"><strong>Wake phrase</strong><span class="sub">From a caption or chat line</span><span class="boundary-note">Stays on the server</span></button></div>
-              <div class="link" data-from="wake" data-to="agent" aria-hidden="true"></div>
-              <div class="box"><button type="button" class="node" data-id="agent" data-hot="reply save" data-boundary="true"><strong>Agent loop</strong><span class="sub">Async queue → OpenAI / Web / Notion</span><span class="boundary-note">Sends XML-delimited digest and question</span></button></div>
+              <div class="box"><button type="button" class="node" data-id="wake" data-hot="reply save guardrails" data-boundary="false"><strong>Wake phrase</strong><span class="sub">From a caption or chat line</span><span class="boundary-note">Stays on the server</span></button></div>
+              <div class="link" data-from="wake" data-to="scope" aria-hidden="true"></div>
+              <div class="box"><button type="button" class="node" data-id="scope" data-hot="reply guardrails" data-boundary="false"><strong>Scope &amp; topic gate</strong><span class="sub">Car vs. meeting · blocks off-topic</span><span class="boundary-note">Refuses non-car &amp; non-meeting queries locally</span></button></div>
+              <div class="link" data-from="scope" data-to="agent" aria-hidden="true"></div>
+              <div class="box"><button type="button" class="node" data-id="agent" data-hot="reply save guardrails" data-boundary="true"><strong>Agent loop</strong><span class="sub">Async queue → KB / DB / Web / LLM</span><span class="boundary-note">Sends XML-delimited digest and question</span></button></div>
               <div class="link" data-from="agent" data-to="guard" aria-hidden="true"></div>
-              <div class="box"><button type="button" class="node" data-id="guard" data-hot="reply" data-boundary="true"><strong>Guardrails</strong><span class="sub">Cite, scrub names, XML tags</span><span class="boundary-note">Blocks uncited car facts and leaked names</span></button></div>
+              <div class="box"><button type="button" class="node" data-id="guard" data-hot="reply guardrails" data-boundary="true"><strong>Search &amp; citation guardrails</strong><span class="sub">has_car_topic · scrub PII · require citation</span><span class="boundary-note">Blocks non-car searches, leaked names, and uncited specs</span></button></div>
               <div class="link" data-from="guard" data-to="post" aria-hidden="true"></div>
-              <div class="box"><button type="button" class="node" data-id="post" data-hot="reply save" data-boundary="false"><strong>Chat reply</strong><span class="sub">post_chat · REPLY</span><span class="boundary-note">Answer goes back into the call</span></button></div>
+              <div class="box"><button type="button" class="node" data-id="post" data-hot="reply save guardrails" data-boundary="false"><strong>Chat reply</strong><span class="sub">OutputGate → post_chat</span><span class="boundary-note">Answer goes back into the call</span></button></div>
             </div>
             <div class="hang">
               <div class="branch" data-from="agent" data-to="knowledge" aria-hidden="true"></div>
-              <button type="button" class="node" data-id="knowledge" data-hot="reply" data-boundary="false"><strong>Knowledge base</strong><span class="sub">Read before web search</span><span class="boundary-note">Stays in the repo</span></button>
+              <button type="button" class="node" data-id="knowledge" data-hot="reply guardrails" data-boundary="false"><strong>Knowledge base</strong><span class="sub">Local car notes read before web search</span><span class="boundary-note">Stays in the repo</span></button>
             </div>
           </section>
 
@@ -233,11 +250,11 @@
 
           <section>
             <div class="lane-head">
-              <h3>This meeting</h3>
-              <p class="hint">Digest (including recent bot replies) goes into the next reply. The full log is what save writes.</p>
+              <h3>Meeting &amp; stored database memory</h3>
+              <p class="hint">Live digest plus stored Notion tasks/summaries and SQLite history feed meeting/task replies.</p>
             </div>
             <div class="row">
-              <div class="box"><button type="button" class="node" data-id="memory" data-hot="reply task save" data-boundary="false"><strong>Meeting memory</strong><span class="sub">SQLite WAL · captions, tasks, replies</span><span class="boundary-note">Stays in SQLite on the server</span></button></div>
+              <div class="box"><button type="button" class="node" data-id="memory" data-hot="reply task save" data-boundary="false"><strong>Meeting memory</strong><span class="sub">SQLite WAL · live + past tasks &amp; captions</span><span class="boundary-note">Stays in SQLite on the server</span></button></div>
               <div class="link" data-from="memory" data-to="save" aria-hidden="true"></div>
               <div class="box"><button type="button" class="node" data-id="save" data-hot="save" data-boundary="true"><strong>save_meeting</strong><span class="sub">PATCH page + transcript toggle → Notion</span><span class="boundary-note">Sends the notes and transcript toggle to Notion</span></button></div>
             </div>
@@ -249,13 +266,35 @@
 
       <section>
         <div class="lane-head">
+          <h3>Guardrail &amp; query routing pipeline (4 gates)</h3>
+          <p class="hint">Every “Hey BA” request passes through four deterministic gates so the bot cannot be used for non-car topics or leak meeting data to the web.</p>
+        </div>
+        <div class="scroll">
+          <div class="sheet">
+            <div class="row">
+              <div class="box"><button type="button" class="node" data-id="scope" data-hot="reply guardrails" data-boundary="false"><strong>1. Domain &amp; off-topic gate</strong><span class="sub">_is_off_topic · is_car_question · is_meeting_question</span><span class="boundary-note">Blocks weather, crypto, coding, trivia</span></button></div>
+              <div class="link" data-from="scope" data-to="guard" aria-hidden="true"></div>
+              <div class="box"><button type="button" class="node" data-id="guard" data-hot="reply guardrails" data-boundary="true"><strong>2. Outbound search gate</strong><span class="sub">query_allowed · has_car_topic · strip_meeting_text</span><span class="boundary-note">Only car queries leave; no transcript/names/URLs</span></button></div>
+              <div class="link" data-from="guard" data-to="agent" aria-hidden="true"></div>
+              <div class="box"><button type="button" class="node" data-id="agent" data-hot="reply guardrails" data-boundary="true"><strong>3. Prompt XML isolation</strong><span class="sub">&lt;meeting_digest&gt; · &lt;knowledge&gt; · &lt;web_results&gt;</span><span class="boundary-note">Untrusted data tags + persona scope rule</span></button></div>
+              <div class="link" data-from="agent" data-to="post" aria-hidden="true"></div>
+              <div class="box"><button type="button" class="node" data-id="post" data-hot="reply guardrails" data-boundary="false"><strong>4. Citation &amp; OutputGate</strong><span class="sub">reply_status · finalize_reply · OutputGate</span><span class="boundary-note">Requires (src: file.md) or URL for car facts</span></button></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <hr class="rule">
+
+      <section>
+        <div class="lane-head">
           <h3>Services</h3>
           <p class="hint">Web search stays off for task extraction and for the summary.</p>
         </div>
         <div class="grid">
-          <button type="button" class="node" data-id="openai" data-hot="reply task save" data-boundary="true"><strong>OpenAI</strong><span class="sub">Responses API · model from config</span><span class="boundary-note">Allowed model path</span></button>
-          <button type="button" class="node" data-id="web" data-hot="reply" data-boundary="true"><strong>Public web</strong><span class="sub">Car pages, fetched in</span><span class="boundary-note">Car question in, pages back</span></button>
-          <button type="button" class="node" data-id="notion" data-hot="task save" data-boundary="true"><strong>Notion</strong><span class="sub">Summary page and tasks</span><span class="boundary-note">Meeting record is stored here</span></button>
+          <button type="button" class="node" data-id="openai" data-hot="reply task save" data-boundary="true"><strong>OpenAI</strong><span class="sub">Responses API · model fallback to gpt-4o-mini</span><span class="boundary-note">Allowed model path</span></button>
+          <button type="button" class="node" data-id="web" data-hot="reply guardrails" data-boundary="true"><strong>Public web</strong><span class="sub">Car-only search (OpenAI + DDG/Wiki fallback)</span><span class="boundary-note">Car question in, cited pages back</span></button>
+          <button type="button" class="node" data-id="notion" data-hot="reply task save" data-boundary="true"><strong>Notion</strong><span class="sub">Read/write tasks_db &amp; summary_db</span><span class="boundary-note">Meeting notes &amp; tasks stored and queried here</span></button>
         </div>
       </section>
 
@@ -278,8 +317,8 @@
     </section>
 
     <aside class="callout">
-      <h2>What may leave the meeting</h2>
-      <p>The knowledge base is ours. Public car pages are fetched in through OpenAI web search, and the query is only the car question. The transcript, participant list, and Notion contents are not placed in that query. The transcript does go to the model for a reply, for task extraction, and for the summary.</p>
+      <h2>What may leave the meeting &amp; domain guardrails</h2>
+      <p>The BA Assistant is strictly scoped to <strong>car/automotive questions</strong> and <strong>meeting notes/tasks</strong>. Any unrelated question (weather, crypto, general trivia, coding, cooking) is blocked locally by <code>_is_off_topic</code> before reaching the LLM or web search. Public car pages are fetched only when <code>has_car_topic(query)</code> is true, and <code>query_allowed</code> / <code>strip_meeting_text</code> guarantee that meeting transcripts, participant names, timestamps, and Notion/Meet URLs never enter a web search query.</p>
     </aside>
 
     <section class="detail" id="detail" aria-live="polite">
@@ -310,17 +349,21 @@
         <div class="detail-head"><h2>Wake phrase</h2><button type="button" class="clear">Whole meeting</button></div>
         <p>Accepts “hey ba”, “hey bea”, “hi ba”, “okay ba”, and “ok ba”. Rejects lookalikes such as “hey bob”, “bay area”, and “the BA team”. The question is the words after the phrase. If the phrase arrives alone, it waits a few seconds for the same speaker, then asks one short clarifying question. A follow-up to that question does not need a second “Hey BA”. Ordinary talk produces no trigger.</p>
       </div>
+      <div class="detail-block" data-detail="scope" hidden>
+        <div class="detail-head"><h2>Scope &amp; topic gate</h2><button type="button" class="clear">Whole meeting</button></div>
+        <p>First guardrail layer after a “Hey BA” wake phrase (<code>policy.py</code> &amp; <code>loop.py</code>). Classifies every question into one of three paths: (1) <strong>Car/automotive question</strong> (<code>is_car_question</code> / <code>has_car_topic</code> or a local knowledge-base hit in <code>data/knowledge/*.md</code>), (2) <strong>Meeting, task, or database question</strong> (<code>is_meeting_question</code> or keyword overlap with the live digest / stored Notion &amp; SQLite records), or (3) <strong>Off-topic refusal</strong> (<code>_is_off_topic</code>). If a question is neither about cars nor about the meeting/tasks, the agent immediately replies with <code>OFF_TOPIC</code> (<em>“I can only help with car and automotive questions or this meeting’s notes and tasks.”</em>) without calling the LLM or web search.</p>
+      </div>
       <div class="detail-block" data-detail="agent" hidden>
         <div class="detail-head"><h2>Agent loop</h2><button type="button" class="clear">Whole meeting</button></div>
-        <p>Runs only after a wake phrase, dispatched through a non-blocking <code>asyncio.Queue</code> worker (<code>replies()</code>) so 300ms caption and chat polling never stalls during slow LLM or web-search calls. The prompt wraps untrusted context in XML delimiters (<code>&lt;meeting_digest&gt;</code>, <code>&lt;knowledge&gt;</code>, <code>&lt;web_results&gt;</code>, <code>&lt;question&gt;</code>). For a car question it calls <code>search_knowledge</code> first, then <code>search_cars</code> if the local hit is weak or the fact is current or specific. It calls <code>create_task</code> only when it has a task, an owner, and a due date; otherwise it asks one question. It calls <code>save_meeting</code> when asked to save. The model does not post to Meet itself.</p>
+        <p>Runs only after a wake phrase and the scope gate, dispatched through a non-blocking <code>asyncio.Queue</code> worker (<code>replies()</code>) so 300ms caption and chat polling never stalls. The prompt wraps untrusted context in XML delimiters (<code>&lt;meeting_digest&gt;</code>, <code>&lt;knowledge&gt;</code>, <code>&lt;web_results&gt;</code>, <code>&lt;question&gt;</code>) and enforces the persona rule to answer only car/automotive or meeting/task questions. For a car question it calls <code>search_knowledge</code> first, then <code>search_cars</code> when local coverage is weak or current specs/prices/models are requested (<code>should_search_web</code>). For meeting/database questions it merges the live digest with stored Notion tasks/summaries and SQLite history via <code>fetch_db_context</code>.</p>
       </div>
       <div class="detail-block" data-detail="knowledge" hidden>
         <div class="detail-head"><h2>Knowledge base</h2><button type="button" class="clear">Whole meeting</button></div>
-        <p>Short Markdown files we write under data/knowledge/, such as hybrid, EV, and a few sourced examples. search_knowledge scores chunks by keyword overlap and returns the file and heading. There is no vector database and no hard-coded question-to-answer table. A strong local hit does not go on to web search.</p>
+        <p>Curated automotive Markdown files under <code>data/knowledge/</code> (hybrid, EV battery, chassis, safety, and sourced examples). <code>KnowledgeIndex.search</code> normalizes automotive stems (e.g., braking → brake, charging → charge), includes file-stem tokens, and boosts heading/multi-token matches so natural-language car questions score accurately.</p>
       </div>
       <div class="detail-block" data-detail="guard" hidden>
-        <div class="detail-head"><h2>Guardrails</h2><button type="button" class="clear">Whole meeting</button></div>
-        <p>A car fact in chat must cite a knowledge-base file or a URL, or the reply says it is not sure. An uncited number is regenerated once, then replaced with a not-sure line. <code>search_cars</code> is refused or scrubbed if the query contains a non-addressed caption line, the participant list, an individual participant name (excluding car brands), or a Notion/Meet URL, while excluding the addressed “Hey BA” question itself from self-collision. Untrusted prompt sections are isolated inside XML delimiters (<code>&lt;meeting_digest&gt;</code>, <code>&lt;knowledge&gt;</code>, <code>&lt;web_results&gt;</code>, <code>&lt;question&gt;</code>). Consent and task confirmations skip this check.</p>
+        <div class="detail-head"><h2>Search &amp; citation guardrails</h2><button type="button" class="clear">Whole meeting</button></div>
+        <p>Enforces both outbound search safety (<code>guardrails/search.py</code>) and outbound chat citation integrity (<code>guardrails/citations.py</code>): (1) <strong>Car-only search enforcement</strong>: <code>query_allowed</code>, <code>OpenAIResponsesClient.search_cars</code>, and tool dispatch all require <code>has_car_topic(query) == True</code>, blocking any non-car web search. (2) <strong>Meeting privacy scrub</strong>: <code>query_allowed</code> and <code>strip_meeting_text</code> reject or strip non-addressed caption snippets (&ge;12 chars), participant names (while preserving car brands and ignoring generic labels like “Unknown speaker” or “You”), timestamps, and Notion/Meet URLs. (3) <strong>Source citation gate</strong>: <code>reply_status</code> and <code>finalize_reply</code> require every car reply with numbers/prices/units to cite <code>(src: filename.md)</code> or an <code>https://</code> URL; uncited drafts are regenerated once, then replaced with <code>NOT_SURE</code>.</p>
       </div>
       <div class="detail-block" data-detail="post" hidden>
         <div class="detail-head"><h2>Chat reply</h2><button type="button" class="clear">Whole meeting</button></div>
@@ -336,7 +379,7 @@
       </div>
       <div class="detail-block" data-detail="memory" hidden>
         <div class="detail-head"><h2>Meeting memory</h2><button type="button" class="clear">Whole meeting</button></div>
-        <p>Stores caption lines, tasks, and posted bot replies (<code>add_reply</code> / <code>recent_replies(limit=5)</code>) in SQLite with WAL mode and composite indexes so a restart can continue cleanly. <code>participants()</code> uses a direct SQL <code>GROUP BY speaker</code> query, and <code>digest()</code> adds participants, open tasks, recent bot replies, and the last few minutes of captions to the next “Hey BA” prompt, capped so a long meeting still fits. Older lines stay in SQLite and go into the summary at the end. This store is not an index of past meetings.</p>
+        <p>Stores caption lines, tasks, and posted bot replies (<code>add_reply</code> / <code>recent_replies(limit=5)</code>) in SQLite with WAL mode and canonical Meet URL matching (<code>_canonical_url</code>) so a restart or URL variant resumes cleanly. <code>digest()</code> provides live meeting participants, tasks, recent bot replies, and recent captions, while <code>stored_context()</code> / <code>all_tasks()</code> surface tasks and captions stored across earlier meetings in SQLite.</p>
       </div>
       <div class="detail-block" data-detail="save" hidden>
         <div class="detail-head"><h2>save_meeting</h2><button type="button" class="clear">Whole meeting</button></div>
@@ -344,15 +387,15 @@
       </div>
       <div class="detail-block" data-detail="openai" hidden>
         <div class="detail-head"><h2>OpenAI</h2><button type="button" class="clear">Whole meeting</button></div>
-        <p>The provided key. Default client is the OpenAI Responses API; Claude or Gemini can sit behind the same interface if the key is not OpenAI. Web search is enabled only inside search_cars. Task extraction and the meeting summary call the model with web search off. The model id is configuration, not hard-coded.</p>
+        <p>Default client is the OpenAI Responses API with automatic model fallback to <code>gpt-4o-mini</code> if a configured preview model is unavailable, plus deterministic local fallback in <code>AgentLoop._fallback_answer</code> if the API key fails. Web search is enabled only inside <code>search_cars</code> for verified car queries.</p>
       </div>
       <div class="detail-block" data-detail="web" hidden>
         <div class="detail-head"><h2>Public web</h2><button type="button" class="clear">Whole meeting</button></div>
-        <p>OpenAI fetches public pages. The query is the car question, such as a current price or a named model. The transcript, the participant list, and Notion contents are not placed in that query. The chat reply shows the URL. If the notes and the search are both empty, the bot says it is not sure and does not invent a spec.</p>
+        <p>Restricted strictly to car/automotive queries (<code>has_car_topic(query) == True</code>). Primary search uses OpenAI <code>web_search</code>; if the OpenAI API fails or returns empty, <code>_public_web_search</code> falls back to DuckDuckGo HTML and Wikipedia API search with source URLs. Meeting transcripts, participant names, and Notion URLs are stripped/blocked before any request leaves the server.</p>
       </div>
       <div class="detail-block" data-detail="notion" hidden>
         <div class="detail-head"><h2>Notion</h2><button type="button" class="clear">Whole meeting</button></div>
-        <p>Two places: a summary page, and tasks with owner and due date. Property names come from notion_schema.yaml, so the attached database can be mapped without code changes. Dedup is normalised task text plus owner, including earlier meetings. Decisions, Requirements, and Risks are not separate databases in this build.</p>
+        <p>Reads and writes two Notion databases configured via <code>notion_schema.yaml</code>: <code>tasks_db</code> and <code>summary_db</code>. At runtime, <code>list_tasks</code>, <code>list_summaries</code>, and <code>database_context</code> fetch stored tasks (owner, due date, status, speaker) and past meeting summaries/transcripts (cached for 30s) so “Hey BA” can answer questions about existing tasks and past meetings as well as create deduplicated tasks and save meeting notes.</p>
       </div>
       <div class="detail-block" data-detail="zoom" hidden>
         <div class="detail-head"><h2>Second platform</h2><button type="button" class="clear">Whole meeting</button></div>
@@ -381,17 +424,18 @@
     </section>
 
     <section style="margin-top: 28px">
-      <h2>Tools the running agent can call</h2>
+      <h2>Tools &amp; data paths the running agent can call</h2>
       <table>
         <thead>
-          <tr><th>Tool</th><th>Who calls it</th><th>Where it goes</th></tr>
+          <tr><th>Tool / Path</th><th>Who calls it</th><th>Where it goes</th><th>Guardrail / Check</th></tr>
         </thead>
         <tbody>
-          <tr><td><code>search_knowledge</code></td><td>Agent, on a car question</td><td>Local markdown files</td></tr>
-          <tr><td><code>search_cars</code></td><td>Agent, when the notes miss or the fact is current</td><td>OpenAI web search, car question only</td></tr>
-          <tr><td><code>create_task</code></td><td>Task extractor, or the agent when someone asks</td><td>Notion tasks (owner and due date)</td></tr>
-          <tr><td><code>save_meeting</code></td><td>Agent when asked, and the adapter when the meeting ends</td><td>Notion summary page</td></tr>
-          <tr><td><code>post_chat</code></td><td>Our code, after the output gate</td><td>Google Meet chat</td></tr>
+          <tr><td><code>search_knowledge</code></td><td>Agent, on a car question</td><td>Local markdown files (<code>data/knowledge/*.md</code>)</td><td>Requires score &ge; <code>min_score</code>; cited as <code>(src: file.md)</code></td></tr>
+          <tr><td><code>search_cars</code></td><td>Agent or LLM tool call when local notes miss or fact is current</td><td>OpenAI <code>web_search</code> + DDG/Wiki fallback</td><td>Requires <code>has_car_topic(query)</code> &amp; <code>query_allowed</code> (scrubs transcript, names, URLs)</td></tr>
+          <tr><td><code>fetch_db_context</code></td><td>Agent, on a meeting / task / database question</td><td>Notion (<code>tasks_db</code>, <code>summary_db</code>) + SQLite (<code>stored_context</code>)</td><td>Read-only context wrapped in <code>&lt;meeting_digest&gt;</code>; never sent to web search</td></tr>
+          <tr><td><code>create_task</code></td><td>Task extractor, or the agent when someone asks</td><td>Notion tasks + SQLite</td><td>Requires task, owner, and due date; deduplicated via <code>dedup_key</code></td></tr>
+          <tr><td><code>save_meeting</code></td><td>Agent when asked, and the adapter when the meeting ends</td><td>Notion summary page</td><td>Web search disabled; idempotent <code>PATCH</code> + single transcript toggle</td></tr>
+          <tr><td><code>post_chat</code></td><td>Our code, after citation &amp; output gates</td><td>Google Meet chat</td><td><code>_is_off_topic</code> blocks non-car/non-meeting queries; <code>reply_status</code> requires citations for car numbers; <code>OutputGate</code> enforces allowed reasons</td></tr>
         </tbody>
       </table>
       <p class="source">Drawn and not callable: build_bom, compare, log_decision, add_requirement, and a spoken reply. Source: the 25 Oct brief and docs/tasks. The agent code is in src/ba_agent. This page matches that build. Extensions stay drawn and are not callable.</p>
@@ -400,10 +444,12 @@
   <script>
     var leads = {
       system: "Two loops share one caption transcript. “Hey BA” is answered in chat. A complete overheard task is written to Notion without a wake phrase.",
-      reply: "“Hey BA” on a caption line or in chat starts one reply. Car facts come from the local notes first, then from web search if the notes miss. The draft is checked, then posted.",
+      reply: "“Hey BA” on a caption line or in chat starts one reply. Car facts come from local notes first, then car-only web search if needed; meeting/task questions query the live digest plus Notion & SQLite.",
+      guardrails: "Four guardrail gates protect every “Hey BA” turn: (1) Domain & off-topic gate blocks non-car/non-meeting questions, (2) Search gate enforces has_car_topic and scrubs meeting PII/transcripts, (3) XML tags isolate untrusted prompt context, and (4) Citation & OutputGate block uncited car specs.",
       task: "Ordinary speech is scanned in the background. A task with an owner and a due date is created in Notion and confirmed in chat. The bot does not ask the room to say “Hey BA”.",
       save: "Save runs when someone asks, and again when the meeting ends. The summary is written with web search off. A second save updates the same Notion page.",
-      boundary: "The model may see this meeting. Web search may see only the car question. Notion stores the summary, the tasks, and the transcript."
+      boundary: "The model may see this meeting. Web search may see only a verified car question (never non-car topics, transcripts, or participant names). Notion stores and serves summaries and tasks.",
+      extensions: "Assignment extensions (dashed) show how today’s build extends to 3 more Notion databases, BOM & option comparisons, a second meeting platform, voice replies, cross-meeting recall, and strict data-flow rules. Open “Extension Diagrams →” for full interactive architectures."
     };
     var arrow = '<svg width="22" height="12" viewBox="0 0 22 12" aria-hidden="true"><path d="M1 6h17M14 2l5 4-5 4" fill="none" stroke="currentColor" stroke-width="1.25"></path></svg>';
     var view = "system";
@@ -416,12 +462,14 @@
     }
     function isDim(node) {
       if (view === "system") return false;
+      if (view === "extensions") return !node.classList.contains("ext");
       if (node.classList.contains("ext")) return view === "boundary" ? node.dataset.id !== "rule" : true;
       if (view === "boundary") return false;
       return tags(node).indexOf(view) === -1;
     }
     function isHot(node) {
       if (view === "boundary") return node.dataset.boundary === "true";
+      if (view === "extensions") return node.classList.contains("ext");
       if (view === "system") return false;
       return tags(node).indexOf(view) !== -1;
     }

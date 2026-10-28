@@ -360,3 +360,28 @@ async def test_t12_stored_database_context_and_web_fallback_priority() -> None:
     reply_notes = poster.posts[-1][0]
     assert "60 kWh LFP pack" in reply_notes
 
+
+@pytest.mark.asyncio
+async def test_t12_off_topic_non_car_questions_are_refused() -> None:
+    from ba_agent.agent.loop import OFF_TOPIC
+
+    searched: list[str] = []
+
+    async def search_cars(query: str) -> WebResult:
+        searched.append(query)
+        raise AssertionError(f"search_cars must not be called for non-car query: {query}")
+
+    agent, poster, _ = _agent("unused", search_cars)
+    for idx, q in enumerate(
+        [
+            "what is the capital of France?",
+            "search the web for Bitcoin price today",
+            "look up the weather in Tokyo",
+            "write me a recipe for chocolate cake",
+        ]
+    ):
+        await agent.handle(_event(q, trigger_id=f"t_off_{idx}"))
+        assert poster.posts[-1][0] == OFF_TOPIC
+    assert searched == []
+
+

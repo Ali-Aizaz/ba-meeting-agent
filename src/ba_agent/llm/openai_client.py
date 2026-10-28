@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 import httpx
 
 from ba_agent.config import Settings
+from ba_agent.knowledge.policy import has_car_topic
 from ba_agent.llm.parse import build_search_request, parse_response
 from ba_agent.models import LLMResponse, WebResult
 
@@ -117,6 +118,9 @@ class OpenAIResponsesClient:
         return parse_response(payload)
 
     async def search_cars(self, query: str) -> WebResult:
+        if not has_car_topic(query):
+            logger.info("search_cars blocked non-car query: %r", query)
+            return WebResult()
         body = build_search_request(query, self.model)
         try:
             response = await self.respond(

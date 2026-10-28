@@ -1,0 +1,1661 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TechSol BA — Extensions &amp; Architecture Diagrams</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #ffffff;
+      --text: #1c1c1c;
+      --muted: #5e5e5e;
+      --faint: #8a8a8a;
+      --line: #d4d4d4;
+      --line-strong: #8d8d8d;
+      --accent: #0b57d0;
+      --accent-soft: #eef3fb;
+      --ext-accent: #7c3aed;
+      --ext-soft: #f5f0ff;
+      --proj-accent: #0d9488;
+      --proj-soft: #edfaf8;
+      --guard-accent: #b45309;
+      --guard-soft: #fef7ec;
+      --danger: #b91c1c;
+      --danger-soft: #fef2f2;
+      --ok: #15803d;
+      --ok-soft: #f0fdf4;
+      --elev: #f7f7f7;
+      --callout: #f3f6fb;
+      --box: 186px;
+      --link: 34px;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #141414;
+        --text: #f2f2f2;
+        --muted: #b5b5b5;
+        --faint: #8e8e8e;
+        --line: #343434;
+        --line-strong: #8a8a8a;
+        --accent: #8ab4f8;
+        --accent-soft: #1e2a3d;
+        --ext-accent: #c4b5fd;
+        --ext-soft: #281f3d;
+        --proj-accent: #5eead4;
+        --proj-soft: #152e2b;
+        --guard-accent: #fbbf24;
+        --guard-soft: #332611;
+        --danger: #f87171;
+        --danger-soft: #361919;
+        --ok: #4ade80;
+        --ok-soft: #142e1f;
+        --elev: #1f1f1f;
+        --callout: #1b222d;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.48 ui-sans-serif, system-ui, -apple-system, sans-serif;
+    }
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 24px 20px 72px;
+    }
+    .top-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      padding-bottom: 14px;
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 20px;
+    }
+    .top-bar .crumb {
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .top-bar a {
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 500;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 12px;
+      background: var(--elev);
+    }
+    .top-bar a:hover {
+      border-color: var(--accent);
+    }
+    h1 { font-size: 24px; font-weight: 600; margin: 0 0 6px; }
+    h2 { font-size: 18px; font-weight: 600; margin: 0; }
+    h3 { font-size: 15px; font-weight: 600; margin: 0; }
+    p { margin: 0; }
+    .lede { color: var(--muted); max-width: 78ch; font-size: 15px; }
+
+    /* Primary diagram tabs */
+    .diagram-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: 18px 0 14px;
+      padding: 6px;
+      background: var(--elev);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+    }
+    .diagram-tabs button {
+      font: inherit;
+      font-size: 13px;
+      font-weight: 500;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--muted);
+      border-radius: 7px;
+      padding: 6px 11px;
+      cursor: pointer;
+      transition: all 0.12s ease;
+    }
+    .diagram-tabs button:hover {
+      color: var(--text);
+      background: var(--bg);
+    }
+    .diagram-tabs button[aria-selected="true"] {
+      background: var(--bg);
+      color: var(--text);
+      border-color: var(--line-strong);
+      box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+    }
+
+    /* Sub-view filter pills */
+    .views {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 12px 0 16px;
+      align-items: center;
+    }
+    .views-label {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--faint);
+      margin-right: 4px;
+    }
+    .views button, .clear {
+      font: inherit;
+      font-size: 12.5px;
+      border: 1px solid var(--line);
+      background: transparent;
+      color: var(--text);
+      border-radius: 999px;
+      padding: 4px 11px;
+      cursor: pointer;
+    }
+    .views button[aria-pressed="true"] {
+      background: var(--text);
+      color: var(--bg);
+      border-color: var(--text);
+    }
+
+    /* Frames & sections */
+    .diagram-panel { display: none; }
+    .diagram-panel.active { display: block; }
+    body[data-tab="all"] .diagram-panel {
+      display: block;
+      margin-bottom: 36px;
+    }
+
+    .frame {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 18px;
+      background: var(--bg);
+    }
+    .frame + .frame { margin-top: 20px; }
+    .frame-head, .legend, .detail-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .lead { font-weight: 500; max-width: 72ch; }
+    .legend { gap: 14px; color: var(--muted); font-size: 12.5px; }
+    .swatch {
+      width: 14px;
+      height: 10px;
+      border: 1.5px solid var(--line-strong);
+      border-radius: 2px;
+      display: inline-block;
+      margin-right: 5px;
+      vertical-align: -1px;
+      background: var(--elev);
+    }
+    .swatch.built { border-color: var(--accent); background: var(--accent-soft); }
+    .swatch.proj { border-color: var(--proj-accent); background: var(--proj-soft); }
+    .swatch.dashed { border-style: dashed; border-color: var(--ext-accent); background: var(--ext-soft); }
+    .swatch.guard { border-color: var(--guard-accent); background: var(--guard-soft); }
+
+    .scroll { overflow-x: auto; margin-top: 16px; padding-bottom: 4px; }
+    .sheet { min-width: 820px; display: flex; flex-direction: column; gap: 18px; }
+    .lane {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px 14px;
+      background: rgba(128, 128, 128, 0.025);
+    }
+    .lane.lane-ext {
+      border-style: dashed;
+      border-color: var(--ext-accent);
+      background: var(--ext-soft);
+    }
+    .lane.lane-proj {
+      border-color: var(--proj-accent);
+      background: var(--proj-soft);
+    }
+    .lane.lane-guard {
+      border-color: var(--guard-accent);
+      background: var(--guard-soft);
+    }
+    .lane-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+    .lane-badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: var(--bg);
+      color: var(--muted);
+    }
+    .lane-badge.built { border-color: var(--accent); color: var(--accent); }
+    .lane-badge.proj { border-color: var(--proj-accent); color: var(--proj-accent); }
+    .lane-badge.ext { border-style: dashed; border-color: var(--ext-accent); color: var(--ext-accent); }
+    .lane-badge.guard { border-color: var(--guard-accent); color: var(--guard-accent); }
+
+    .hint, .bridge, .source, .boundary-note { color: var(--muted); font-size: 12.5px; }
+    .boundary-note { display: none; margin-top: 5px; font-size: 11px; color: var(--faint); font-weight: 500; }
+    body[data-view="boundary"] .boundary-note { display: block; }
+    body[data-view="boundary"] .node.hot .boundary-note { color: var(--guard-accent); }
+
+    .row { display: flex; align-items: stretch; flex-wrap: nowrap; }
+    .box { width: var(--box); flex: 0 0 auto; display: flex; }
+    .hang-row {
+      display: flex;
+      gap: 16px;
+      margin-top: 6px;
+      padding-left: calc(var(--box) + var(--link));
+      flex-wrap: wrap;
+    }
+    .hang-box { width: var(--box); }
+
+    .node {
+      display: block;
+      width: 100%;
+      text-align: left;
+      font: inherit;
+      color: var(--text);
+      background: var(--elev);
+      border: 1.5px solid var(--line-strong);
+      border-radius: 7px;
+      padding: 8px 10px;
+      cursor: pointer;
+      transition: transform 0.1s ease, border-color 0.12s ease, opacity 0.15s ease;
+    }
+    .node:hover { border-color: var(--accent); }
+    .node strong { display: block; font-size: 13px; font-weight: 600; line-height: 1.3; }
+    .node span.sub { display: block; margin-top: 3px; font-size: 11.5px; line-height: 1.35; color: var(--muted); }
+    .node .tag {
+      display: inline-block;
+      margin-top: 5px;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      padding: 1px 6px;
+      border-radius: 4px;
+      background: var(--bg);
+      border: 1px solid var(--line);
+      color: var(--muted);
+    }
+    .node.built { border-color: var(--accent); }
+    .node.built .tag { color: var(--accent); border-color: var(--accent); }
+    .node.proj { border-color: var(--proj-accent); background: var(--bg); }
+    .node.proj .tag { color: var(--proj-accent); border-color: var(--proj-accent); }
+    .node.ext {
+      border-style: dashed;
+      border-width: 1.5px;
+      border-color: var(--ext-accent);
+      background: var(--bg);
+    }
+    .node.ext .tag { color: var(--ext-accent); border-color: var(--ext-accent); border-style: dashed; }
+    .node.guard { border-color: var(--guard-accent); }
+    .node.guard .tag { color: var(--guard-accent); border-color: var(--guard-accent); }
+
+    .node.hot { border-width: 2px; box-shadow: 0 0 0 2px rgba(11, 87, 208, 0.15); }
+    .node.on { background: var(--accent-soft); border-color: var(--accent); border-width: 2px; }
+    .node.dim { opacity: 0.32; }
+
+    .link {
+      width: var(--link);
+      flex: 0 0 auto;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: var(--line-strong);
+      font-size: 10px;
+    }
+    .link svg { display: block; }
+    .link.dashed svg path.shaft { stroke-dasharray: 3 2.5; }
+    .link.hot { color: var(--accent); }
+    .link.quiet { opacity: 0.25; }
+
+    .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+    .grid-5 { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+
+    .rule { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
+
+    .callout {
+      margin-top: 16px;
+      padding: 12px 15px;
+      background: var(--callout);
+      border-left: 3px solid var(--accent);
+      border-radius: 6px;
+    }
+    .callout h3 { font-size: 14px; margin-bottom: 4px; }
+
+    /* Detail inspector */
+    .detail {
+      margin-top: 18px;
+      padding: 14px 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--elev);
+    }
+    .detail p + p { margin-top: 8px; }
+    .detail[hidden], .detail-block[hidden] { display: none; }
+
+    /* Architecture sub-diagram cards */
+    .arch-flow {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      margin-top: 14px;
+    }
+    .flow-stage {
+      display: grid;
+      grid-template-columns: 190px 1fr;
+      gap: 14px;
+      align-items: center;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--elev);
+    }
+    .flow-stage.ext-stage {
+      border-style: dashed;
+      border-color: var(--ext-accent);
+      background: var(--ext-soft);
+    }
+    .flow-stage.proj-stage {
+      border-color: var(--proj-accent);
+      background: var(--proj-soft);
+    }
+    .flow-stage.guard-stage {
+      border-color: var(--guard-accent);
+      background: var(--guard-soft);
+    }
+    .stage-title {
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .stage-sub {
+      font-size: 11.5px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+    .stage-cards {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+    }
+    .mini-card {
+      flex: 1 1 170px;
+      padding: 9px 11px;
+      border-radius: 6px;
+      border: 1px solid var(--line-strong);
+      background: var(--bg);
+      font-size: 12.5px;
+    }
+    .mini-card.dashed {
+      border-style: dashed;
+      border-color: var(--ext-accent);
+    }
+    .mini-card.proj {
+      border-color: var(--proj-accent);
+    }
+    .mini-card.ok {
+      border-color: var(--ok);
+      background: var(--ok-soft);
+    }
+    .mini-card.blocked {
+      border-color: var(--danger);
+      background: var(--danger-soft);
+    }
+    .mini-card strong {
+      display: block;
+      font-size: 12.5px;
+      margin-bottom: 3px;
+    }
+    .mini-card span {
+      display: block;
+      font-size: 11.5px;
+      color: var(--muted);
+    }
+    .flow-arrow {
+      font-size: 16px;
+      color: var(--muted);
+      font-weight: 600;
+      padding: 0 2px;
+    }
+
+    /* Terminal / Chat preview */
+    .terminal {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      line-height: 1.5;
+      padding: 12px 14px;
+      border-radius: 7px;
+      border: 1px solid var(--line);
+      background: var(--elev);
+      overflow-x: auto;
+      white-space: pre;
+      margin-top: 10px;
+    }
+
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13.5px; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { font-weight: 600; font-size: 12.5px; color: var(--muted); }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; }
+
+    .status-pill {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 7px;
+      border-radius: 999px;
+    }
+    .status-pill.built { background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent); }
+    .status-pill.proj { background: var(--proj-soft); color: var(--proj-accent); border: 1px solid var(--proj-accent); }
+    .status-pill.ext { background: var(--ext-soft); color: var(--ext-accent); border: 1px dashed var(--ext-accent); }
+
+    @media (max-width: 820px) {
+      .grid-2, .grid-3, .grid-4, .grid-5 { grid-template-columns: 1fr; }
+      .flow-stage { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body data-view="all" data-tab="unified">
+  <main>
+    <div class="top-bar">
+      <span class="crumb">TechSol AI Engineer Assignment · <code>docs/TechSol_AI_Engineer_Assignment_new.pdf</code></span>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <a href="techsol-ba-architecture.html">← Core System Architecture</a>
+        <a href="diagrams/architecture.mmd">Mermaid Source (.mmd)</a>
+      </div>
+    </div>
+
+    <h1>TechSol BA — Today’s Build &amp; Extension Diagrams</h1>
+    <p class="lede">
+      Interactive diagrams covering the <strong>5 Must-Have requirements</strong> built today, the <strong>5 Assignment Extensions</strong> (drawn with dashed borders per the brief), and the <strong>Project Extensions</strong> built in this repository (Chrome Extension auto-join, Cloudflare Container orchestration, live Notion sync, and cross-meeting recall).
+    </p>
+
+    <!-- Diagram Navigation Tabs -->
+    <div class="diagram-tabs" role="tablist" aria-label="Extension Diagrams">
+      <button type="button" role="tab" data-tab-btn="unified" aria-selected="true">1. Unified Diagram (Build + Extensions)</button>
+      <button type="button" role="tab" data-tab-btn="notion-dbs" aria-selected="false">2. Ext: Notion Databases (Decisions, Req, Risks)</button>
+      <button type="button" role="tab" data-tab-btn="bom-compare" aria-selected="false">3. Ext: Car Parts / BOM &amp; Comparisons</button>
+      <button type="button" role="tab" data-tab-btn="platform-voice" aria-selected="false">4. Ext: 2nd Platform &amp; Voice Replies (TTS)</button>
+      <button type="button" role="tab" data-tab-btn="past-memory" aria-selected="false">5. Ext: Memory Across Past Meetings</button>
+      <button type="button" role="tab" data-tab-btn="data-flow" aria-selected="false">6. Ext: Strict Data-Flow Boundary</button>
+      <button type="button" role="tab" data-tab-btn="project-ext" aria-selected="false">7. Project Ext: Chrome + Cloudflare + HUD</button>
+      <button type="button" role="tab" data-tab-btn="all" aria-selected="false">Show All Diagrams</button>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- PANEL 1: UNIFIED DIAGRAM (TODAY'S BUILD + EXTENSIONS)                 -->
+    <!-- ===================================================================== -->
+    <div class="diagram-panel active" data-panel="unified">
+      <div class="views" role="group" aria-label="Filter unified diagram">
+        <span class="views-label">Highlight layer:</span>
+        <button type="button" data-view-btn="all" aria-pressed="true">Complete picture</button>
+        <button type="button" data-view-btn="built" aria-pressed="false">Today’s core build (5 Musts)</button>
+        <button type="button" data-view-btn="spec-ext" aria-pressed="false">Assignment extensions (diagram only)</button>
+        <button type="button" data-view-btn="proj-ext" aria-pressed="false">Built project extensions</button>
+        <button type="button" data-view-btn="boundary" aria-pressed="false">Data-flow boundary</button>
+      </div>
+
+      <section class="frame" aria-label="Unified build and extensions diagram">
+        <div class="frame-head">
+          <p class="lead" id="unified-lead">
+            One diagram showing today’s build (solid) and how it extends (dashed), plus the built Chrome &amp; Cloudflare automation layer. Click any box for implementation details.
+          </p>
+          <div class="legend">
+            <span><i class="swatch built"></i>Built Today (Core Musts)</span>
+            <span><i class="swatch proj"></i>Built Project Extension</span>
+            <span><i class="swatch dashed"></i>Assignment Extension (Diagram Only)</span>
+            <span><i class="swatch guard"></i>Data-Flow Guardrail</span>
+          </div>
+        </div>
+
+        <div class="scroll">
+          <div class="sheet">
+
+            <!-- LANE 0: PROJECT EXTENSION — CHROME + CLOUDFLARE -->
+            <section class="lane lane-proj">
+              <div class="lane-head">
+                <div>
+                  <h3>0. Project Extension — Zero-Touch Call Orchestration &amp; Live HUD</h3>
+                  <p class="hint">Built in <code>extension/</code> and <code>cloudflare/src/index.ts</code>. Automatically summons and admits TechSol BA when you open Google Meet.</p>
+                </div>
+                <span class="lane-badge proj">Built Project Extension</span>
+              </div>
+              <div class="row">
+                <div class="box">
+                  <button type="button" class="node proj" data-id="chrome-ext" data-layer="proj-ext" data-boundary="false">
+                    <strong>Chrome Extension (MV3)</strong>
+                    <span class="sub">Detects Meet tab · Auto-admits bot</span>
+                    <span class="tag">Built · extension/</span>
+                    <span class="boundary-note">Browser-local; sends only Meet code URL</span>
+                  </button>
+                </div>
+                <div class="link" data-from="chrome-ext" data-to="cf-worker" aria-hidden="true"></div>
+                <div class="box">
+                  <button type="button" class="node proj" data-id="cf-worker" data-layer="proj-ext" data-boundary="false">
+                    <strong>Cloudflare Worker</strong>
+                    <span class="sub">POST /join · Bearer auth · /status?peek=1</span>
+                    <span class="tag">Built · cloudflare/</span>
+                    <span class="boundary-note">Edge router; blocks scanner wakeups</span>
+                  </button>
+                </div>
+                <div class="link" data-from="cf-worker" data-to="cf-container" aria-hidden="true"></div>
+                <div class="box">
+                  <button type="button" class="node proj" data-id="cf-container" data-layer="proj-ext" data-boundary="false">
+                    <strong>BaContainer (standard-1)</strong>
+                    <span class="sub">4 GiB RAM · 3h sleep · Multi-Meet keep_alive</span>
+                    <span class="tag">Built · wrangler.jsonc</span>
+                    <span class="boundary-note">Isolated container running Xvfb + Python</span>
+                  </button>
+                </div>
+                <div class="link" data-from="cf-container" data-to="hud-toast" aria-hidden="true"></div>
+                <div class="box">
+                  <button type="button" class="node proj" data-id="hud-toast" data-layer="proj-ext" data-boundary="false">
+                    <strong>Live Activity Toast HUD</strong>
+                    <span class="sub">In-call overlay + extension activity trail</span>
+                    <span class="tag">Built · status.py</span>
+                    <span class="boundary-note">Shows live stage in Meet</span>
+                  </button>
+                </div>
+              </div>
+            </section>
+
+            <!-- LANE 1: MEETING CALL & PLATFORM ADAPTERS -->
+            <section class="lane">
+              <div class="lane-head">
+                <div>
+                  <h3>1. Meeting Call &amp; Platform Layer (Must #1 &amp; #2 + Extension: 2nd Platform)</h3>
+                  <p class="hint">Joins Google Meet via Playwright (audio-only SDP), scrapes live captions with speaker + <code>[mm:ss]</code> clock, and reads chat.</p>
+                </div>
+                <span class="lane-badge built">Must #1 &amp; #2 + Ext #3</span>
+              </div>
+              <div class="row">
+                <div class="box">
+                  <button type="button" class="node built" data-id="meet-adapter" data-layer="built" data-boundary="false">
+                    <strong>Google Meet Adapter</strong>
+                    <span class="sub">Playwright · SDP video off · _ui_lock</span>
+                    <span class="tag">Built · Must #1</span>
+                    <span class="boundary-note">Stays inside server container</span>
+                  </button>
+                </div>
+                <div class="link" data-from="meet-adapter" data-to="google-meet" aria-hidden="true"></div>
+                <div class="box">
+                  <button type="button" class="node built" data-id="google-meet" data-layer="built" data-boundary="false">
+                    <strong>Google Meet Call</strong>
+                    <span class="sub">Hosted live captions + meeting chat</span>
+                    <span class="tag">Built · Must #1</span>
+                    <span class="boundary-note">Meeting room audio &amp; chat</span>
+                  </button>
+                </div>
+                <div class="link" data-from="google-meet" data-to="caption-pump" aria-hidden="true"></div>
+                <div class="box">
+                  <button type="button" class="node built" data-id="caption-pump" data-layer="built" data-boundary="false">
+                    <strong>Captions &amp; Chat Stream</strong>
+                    <span class="sub">Stabilizer · Speaker alias · [mm:ss]</span>
+                    <span class="tag">Built · Must #2</span>
+                    <span class="boundary-note">Stored in local SQLite WAL</span>
+                  </button>
+                </div>
+                <div class="link dashed" data-from="caption-pump" data-to="second-platform" aria-hidden="true"></div>
+                <div class="box">
+                  <button type="button" class="node ext" data-id="second-platform" data-layer="spec-ext" data-boundary="false">
+                    <strong>Second Meeting Platform</strong>
+                    <span class="sub">Zoom / MS Teams via MeetingPlatform</span>
+                    <span class="tag">Extension · Do Not Build</span>
+                    <span class="boundary-note">Same interface, platform-native captions</span>
+                  </button>
+                </div>
+              </div>
+            </section>
+
+            <!-- LANE 2: ADDRESSED "HEY BA" LOOP + CAR KB + BOM + VOICE -->
+            <section class="lane">
+              <div class="lane-head">
+                <div>
+                  <h3>2. Addressed “Hey BA” Loop, Car Knowledge &amp; Replies (Must #3 &amp; #4 + Extensions: BOM, Voice, Data-Flow)</h3>
+                  <p class="hint">Triggered by spoken or typed “Hey BA”. Queries local Markdown KB first; uses guarded OpenAI web search only for car facts.</p>
+                </div>
+                <span class="lane-badge built">Must #3 &amp; #4 + Ext #2, #3, #5</span>
+              </div>
+              <div class="row">
+                <div class="box">
+                  <button type="button" class="node built" data-id="wake-detector" data-layer="built" data-boundary="false">
+                    <strong>“Hey BA” Trigger</strong>
+                    <span class="sub">Spoken or chat · 5s pause · 20s follow-up</span>
+                    <span class="tag">Built · Must #3</span>
+                    <span class="boundary-note">Local regex &amp; fuzzy matcher</span>
+                  </button>
+                </div>
+                <div class="link" data-from="wake-detector" data-to="local-kb" aria-hidden="true"></div>
+                <div class="box">
+                  <button type="button" class="node built" data-id="local-kb" data-layer="built" data-boundary="false">
+                    <strong>Local Car Knowledge Base</strong>
+                    <span class="sub">data/knowledge/*.md · Keyword RAG</span>
+                    <span class="tag">Built · Must #4</span>
+                    <span class="boundary-note">100% local in repo; never leaves</span>
+                  </button>
+                </div>
+                <div class="link" data-from="local-kb" data-to="search-guard" aria-hidden="true"></div>
+                <div class="box">
+                  <button type="button" class="node guard" data-id="search-guard" data-layer="built spec-ext" data-boundary="true">
+                    <strong>Data-Flow Guardrail Gate</strong>
+                    <span class="sub">search_cars · Strips transcript &amp; names</span>
+                    <span class="tag">Built + Ext #5 Rule</span>
+                    <span class="boundary-note">ONLY sanitized car question leaves to web</span>
+                  </button>
+                </div>
+                <div class="link" data-from="search-guard" data-to="chat-reply" aria-hidden="true"></div>
+                <div class="box">
+                  <button type="button" class="node built" data-id="chat-reply" data-layer="built" data-boundary="false">
+                    <strong>Meeting Chat Reply</strong>
+                    <span class="sub">Cited facts (src: file / URL) · OutputGate</span>
+                    <span class="tag">Built · Must #3 &amp; #4</span>
+                    <span class="boundary-note">Posted back to Google Meet chat</span>
+                  </button>
+                </div>
+              </div>
+
+              <div class="hang-row">
+                <div class="hang-box">
+                  <button type="button" class="node ext" data-id="bom-compare" data-layer="spec-ext" data-boundary="false">
+                    <strong>Car Parts / BOM &amp; Compare</strong>
+                    <span class="sub">build_bom(system) · compare(a, b)</span>
+                    <span class="tag">Extension · Do Not Build</span>
+                    <span class="boundary-note">Reads local KB only; no transcript sent out</span>
+                  </button>
+                </div>
+                <div class="hang-box">
+                  <button type="button" class="node ext" data-id="voice-reply" data-layer="spec-ext" data-boundary="false">
+                    <strong>Voice Replies (TTS API)</strong>
+                    <span class="sub">OpenAI Speech TTS → Virtual mic unmute</span>
+                    <span class="tag">Extension · Do Not Build</span>
+                    <span class="boundary-note">Spoken summary of the verified chat reply</span>
+                  </button>
+                </div>
+                <div class="hang-box">
+                  <button type="button" class="node guard" data-id="web-search" data-layer="built spec-ext" data-boundary="true">
+                    <strong>OpenAI web_search</strong>
+                    <span class="sub">Fetches public car specs &amp; prices IN</span>
+                    <span class="tag">Inbound Web Data Only</span>
+                    <span class="boundary-note">Receives car query only; never meeting data</span>
+                  </button>
+                </div>
+              </div>
+            </section>
+
+            <!-- LANE 3: NOTION PERSISTENCE, EXTRA DATABASES & CROSS-MEETING MEMORY -->
+            <section class="lane">
+              <div class="lane-head">
+                <div>
+                  <h3>3. Notion Persistence, Extra Databases &amp; Past-Meeting Memory (Must #5 + Extensions #1 &amp; #4)</h3>
+                  <p class="hint">Saves summary + tasks (owner + due date) to Notion, syncs live during the call, and extends to Decisions, Requirements, Risks, and cross-meeting memory.</p>
+                </div>
+                <span class="lane-badge built">Must #5 + Ext #1 &amp; #4</span>
+              </div>
+              <div class="row">
+                <div class="box">
+                  <button type="button" class="node built" data-id="notion-tasks" data-layer="built" data-boundary="true">
+                    <strong>Notion Tasks Database</strong>
+                    <span class="sub">Owner + Due date · Dedup cache · Overheard</span>
+                    <span class="tag">Built · Must #5</span>
+                    <span class="boundary-note">Writes structured task rows to Notion</span>
+                  </button>
+                </div>
+                <div class="link" data-from="notion-tasks" data-to="notion-summary" aria-hidden="true"></div>
+                <div class="box">
+                  <button type="button" class="node built" data-id="notion-summary" data-layer="built proj-ext" data-boundary="true">
+                    <strong>Notion Summary Page</strong>
+                    <span class="sub">Summary + Transcript toggle + Live sync</span>
+                    <span class="tag">Built · Must #5</span>
+                    <span class="boundary-note">PATCH /pages + /blocks/children</span>
+                  </button>
+                </div>
+                <div class="link dashed" data-from="notion-summary" data-to="extra-notion-dbs" aria-hidden="true"></div>
+                <div class="box">
+                  <button type="button" class="node ext" data-id="extra-notion-dbs" data-layer="spec-ext" data-boundary="true">
+                    <strong>More Notion Databases</strong>
+                    <span class="sub">Decisions · Requirements · Risks DBs</span>
+                    <span class="tag">Extension · Do Not Build</span>
+                    <span class="boundary-note">Linked to Meeting Summary via relation</span>
+                  </button>
+                </div>
+                <div class="link dashed" data-from="extra-notion-dbs" data-to="past-meetings" aria-hidden="true"></div>
+                <div class="box">
+                  <button type="button" class="node ext" data-id="past-meetings" data-layer="spec-ext proj-ext" data-boundary="false">
+                    <strong>Memory Across Past Meetings</strong>
+                    <span class="sub">Recall prior summaries &amp; tasks into digest</span>
+                    <span class="tag">Spec Ext + Built Recall</span>
+                    <span class="boundary-note">Reads Notion &amp; SQLite history into prompt</span>
+                  </button>
+                </div>
+              </div>
+            </section>
+
+          </div>
+        </div>
+
+        <!-- Interactive Node Detail Inspector -->
+        <section class="detail" id="unified-detail" aria-live="polite">
+          <div class="detail-block" data-detail="">
+            <div class="detail-head">
+              <h3>Interactive Component Inspector</h3>
+            </div>
+            <p style="margin-top:4px; color:var(--muted);">
+              Click any solid or dashed box in the diagram above to inspect how it works in today’s build or how it is architected as an extension. Use the tabs at the top of the page to view dedicated deep-dive diagrams for each of the 5 assignment extensions and the Chrome/Cloudflare project extensions.
+            </p>
+          </div>
+
+          <div class="detail-block" data-detail="chrome-ext" hidden>
+            <div class="detail-head"><h3>Chrome Extension (MV3) — <code>extension/</code></h3><button type="button" class="clear">Reset selection</button></div>
+            <p>Unpacked Manifest V3 extension (<code>background.js</code>, <code>content.js</code>, <code>popup.html</code>, <code>popup.js</code>). Watches for Google Meet URLs (<code>https://meet.google.com/xxx-xxxx-xxx</code>), triggers <code>POST /join</code> on the Cloudflare Worker automatically when a Meet tab opens or joins, auto-clicks the Google Meet <strong>Admit</strong> button when “TechSol BA” knocks in the lobby, detects local “Hey BA” wake phrases for instant visual feedback, and renders a live status toast in the bottom-right corner of Google Meet.</p>
+          </div>
+
+          <div class="detail-block" data-detail="cf-worker" hidden>
+            <div class="detail-head"><h3>Cloudflare Worker Edge Router — <code>cloudflare/src/index.ts</code></h3><button type="button" class="clear">Reset selection</button></div>
+            <p>Routes <code>POST /join</code> (authenticated with constant-time <code>crypto.subtle.timingSafeEqual</code> against <code>BA_WEBHOOK_SECRET</code>), <code>GET /status?peek=1</code> (checks container state without waking a sleeping container), and <code>GET /status</code> to the singleton <code>BaContainer</code> Durable Object. Non-status paths (such as <code>/favicon.ico</code> or scanner probes) return <code>404</code> at the edge so they never wake the 4 GiB container.</p>
+          </div>
+
+          <div class="detail-block" data-detail="cf-container" hidden>
+            <div class="detail-head"><h3>Cloudflare Container (<code>standard-1</code>) &amp; Multi-Meet Keep-Alive</h3><button type="button" class="clear">Reset selection</button></div>
+            <p>Runs the Playwright + Xvfb Docker image on a <code>standard-1</code> instance (4 GiB RAM, 0.5 vCPU, <code>sleepAfter = "3h"</code>). With <code>BA_BROWSER__KEEP_ALIVE=true</code>, Chromium stays open and signed in between meetings: a new <code>POST /join</code> switches the running session to the new Meet URL without cold-starting the browser.</p>
+          </div>
+
+          <div class="detail-block" data-detail="hud-toast" hidden>
+            <div class="detail-head"><h3>Live Activity Toast HUD — <code>status.py</code> &amp; <code>content.js</code></h3><button type="button" class="clear">Reset selection</button></div>
+            <p>Every stage of the agent (hearing “Hey BA”, searching <code>data/knowledge/</code>, running <code>search_cars</code>, extracting overheard tasks, saving to Notion) emits structured activity events with sequence numbers via <code>StatusState.record_activity()</code>. These appear both on the bot’s own Playwright overlay (<code>adapter.show_toast</code>) and in the user’s Chrome Meet tab via <code>content.js</code>.</p>
+          </div>
+
+          <div class="detail-block" data-detail="meet-adapter" hidden>
+            <div class="detail-head"><h3>Google Meet Adapter (Built · Must #1)</h3><button type="button" class="clear">Reset selection</button></div>
+            <p>Driven by Playwright in headed Chromium under Xvfb. Joins with camera and microphone muted, rewrites WebRTC SDP offers/answers so incoming video tracks are <code>a=inactive</code> (saving CPU on 0.5-vCPU containers), posts the consent notice with the pre-created Notion summary URL, turns on live captions, and serializes chat DOM actions via <code>_ui_lock</code>.</p>
+          </div>
+
+          <div class="detail-block" data-detail="google-meet" hidden>
+            <div class="detail-head"><h3>Google Meet Call (Built · Must #1)</h3><button type="button" class="clear">Reset selection</button></div>
+            <p>The live meeting platform built today. Uses Google Meet’s built-in closed captions for speech-to-text (as required by the 25 Oct revision) and the in-call chat panel for both “Hey BA” triggers and bot replies.</p>
+          </div>
+
+          <div class="detail-block" data-detail="caption-pump" hidden>
+            <div class="detail-head"><h3>Captions &amp; Chat Stream (Built · Must #2)</h3><button type="button" class="clear">Reset selection</button></div>
+            <p><code>CaptionPump</code> and <code>Stabilizer</code> poll the Meet caption DOM every 300ms, wait for in-place caption edits to settle, normalize speaker names via <code>config/speaker_aliases.yaml</code>, attach meeting-relative timestamps (<code>[mm:ss]</code>), and persist every committed line to SQLite WAL (<code>captions</code> table).</p>
+          </div>
+
+          <div class="detail-block" data-detail="second-platform" hidden>
+            <div class="detail-head"><h3>Extension: Second Meeting Platform (Zoom / MS Teams)</h3><button type="button" class="clear">Reset selection</button></div>
+            <p><strong>Diagram-only extension:</strong> <code>src/ba_agent/bot/base.py</code> defines the <code>MeetingPlatform</code> protocol (<code>join</code>, <code>enable_captions</code>, <code>drain_caption_frames</code>, <code>collect_chat</code>, <code>post_chat</code>, <code>leave</code>). Extending to Zoom Web Client or Microsoft Teams adds <code>ZoomAdapter</code> / <code>TeamsAdapter</code> implementing the exact same interface while keeping <code>AgentLoop</code>, <code>TriggerDetector</code>, <code>MeetingStore</code>, and <code>NotionService</code> unchanged.</p>
+          </div>
+
+          <div class="detail-block" data-detail="wake-detector" hidden>
+            <div class="detail-head"><h3>“Hey BA” Wake Phrase Detector (Built · Must #3)</h3><button type="button" class="clear">Reset selection</button></div>
+            <p>Matches spoken or typed “Hey BA” (plus caption phonetic variants like “Hey Bea”, “Hi BA”, “OK BA”, and chat <code>@ba</code>) while rejecting lookalikes (“Hey Bob”, “Bay Area”, “the BA team”). Supports bare “Hey BA” with a 5-second pause wait and a 20-second same-speaker follow-up window.</p>
+          </div>
+
+          <div class="detail-block" data-detail="local-kb" hidden>
+            <div class="detail-head"><h3>Local Car Knowledge Base (Built · Must #4)</h3><button type="button" class="clear">Reset selection</button></div>
+            <p>Curated Markdown files in <code>data/knowledge/</code> (<code>hybrid.md</code>, <code>ev.md</code>, <code>body-and-chassis.md</code>, <code>safety.md</code>, <code>examples.md</code>). Indexed by <code>KnowledgeIndex</code> using heading-aware chunking and keyword-overlap scoring. Checked first on every car question; strong local hits answer directly with <code>(src: filename.md)</code> without calling web search.</p>
+          </div>
+
+          <div class="detail-block" data-detail="search-guard" hidden>
+            <div class="detail-head"><h3>Data-Flow Guardrail Gate (Built + Extension #5 Rule)</h3><button type="button" class="clear">Reset selection</button></div>
+            <p>Enforces the assignment’s strict data-flow boundary: <em>“own knowledge base; internet only to fetch data in, meeting data never sent out.”</em> Before <code>search_cars(query)</code> calls OpenAI <code>web_search</code>, <code>query_allowed()</code> and <code>strip_meeting_text()</code> verify that no non-addressed transcript snippets (≥12 chars), participant names (excluding car brand names), or Notion/Meet URLs are present in the outbound search string.</p>
+          </div>
+
+          <div class="detail-block" data-detail="chat-reply" hidden>
+            <div class="detail-head"><h3>Meeting Chat Reply &amp; Citation Gate (Built · Must #3 &amp; #4)</h3><button type="button" class="clear">Reset selection</button></div>
+            <p>Every car reply passes through <code>guardrails/citations.py</code> to verify it cites a local file <code>(src: ...)</code> or a web URL. Uncited numbers trigger a single regeneration prompt and otherwise fall back to <em>“I’m not sure from the car notes or web search.”</em> <code>OutputGate</code> guarantees at most one chat reply per trigger.</p>
+          </div>
+
+          <div class="detail-block" data-detail="bom-compare" hidden>
+            <div class="detail-head"><h3>Extension: Car Parts / BOM Tables &amp; Option Comparisons</h3><button type="button" class="clear">Reset selection</button></div>
+            <p><strong>Diagram-only extension:</strong> Adds two structured tools to <code>AgentLoop</code>: <code>build_bom(system)</code> (returns part, quantity, unit cost, extended total, lead time, and supplier from local parts tables, flagging lead times ≥12 weeks and single-source suppliers) and <code>compare(option_a, option_b, criteria)</code> (returns a side-by-side trade-off table capped at ≤8 rows, ≤5 columns, ≤120 chars/line for Meet chat).</p>
+          </div>
+
+          <div class="detail-block" data-detail="voice-reply" hidden>
+            <div class="detail-head"><h3>Extension: Voice Replies via Text-to-Speech API</h3><button type="button" class="clear">Reset selection</button></div>
+            <p><strong>Diagram-only extension:</strong> Keeps the full cited text reply in Meet chat while synthesizing a concise 1–2 sentence spoken summary via an allowed TTS API (e.g., OpenAI <code>audio.speech</code>). Output is routed into Chromium’s virtual microphone via a PulseAudio null-sink, unmuting the Meet mic only for the duration of playback and re-muting immediately afterward.</p>
+          </div>
+
+          <div class="detail-block" data-detail="web-search" hidden>
+            <div class="detail-head"><h3>OpenAI Web Search (Inbound Public Car Facts Only)</h3><button type="button" class="clear">Reset selection</button></div>
+            <p>Used only inside <code>search_cars(query)</code> when the local knowledge base score is below <code>min_score</code> or the question asks for live/current model pricing or specs. Disabled (<code>enable_web_search=False</code>) during task extraction and meeting summarization.</p>
+          </div>
+
+          <div class="detail-block" data-detail="notion-tasks" hidden>
+            <div class="detail-head"><h3>Notion Tasks Database (Built · Must #5)</h3><button type="button" class="clear">Reset selection</button></div>
+            <p>Stores tasks with <code>Task</code>, <code>Owner</code>, and <code>Due</code> date, created either explicitly via “Hey BA, add a task…” or automatically from overheard speech via <code>_Extractor</code> (using a local task-signal pre-filter + LLM JSON extraction + deterministic regex fallback). Deduplicates across all meetings via normalized <code>dedup_key(task, owner)</code> and an in-memory cache.</p>
+          </div>
+
+          <div class="detail-block" data-detail="notion-summary" hidden>
+            <div class="detail-head"><h3>Notion Summary Page &amp; Live Sync (Built · Must #5)</h3><button type="button" class="clear">Reset selection</button></div>
+            <p>Pre-creates the Notion summary page at meeting join (<code>ensure_summary_page</code>) so the consent message includes a live link. Syncs live notes in the background during the call (<code>live_notes()</code>) and writes the LLM executive summary, task list, and collapsed full transcript toggle block on “Hey BA, save the meeting” and at call end.</p>
+          </div>
+
+          <div class="detail-block" data-detail="extra-notion-dbs" hidden>
+            <div class="detail-head"><h3>Extension: More Notion Databases (Decisions, Requirements, Risks)</h3><button type="button" class="clear">Reset selection</button></div>
+            <p><strong>Diagram-only extension:</strong> Extends the background transcript classifier and <code>NotionService</code> with three additional databases mapped in <code>config/notion_schema.yaml</code>: <strong>Decisions</strong> (Decision, Rationale, Decided By, Status), <strong>Requirements</strong> (Req ID, Requirement, Priority, Category), and <strong>Risks</strong> (Risk, Severity, Likelihood, Mitigation, Owner), each linked to the Meeting Summary page via a Notion Relation property.</p>
+          </div>
+
+          <div class="detail-block" data-detail="past-meetings" hidden>
+            <div class="detail-head"><h3>Extension + Built Recall: Memory Across Past Meetings</h3><button type="button" class="clear">Reset selection</button></div>
+            <p><strong>Spec Extension + Built Recall:</strong> <code>NotionService.database_context()</code> queries historical summaries and open tasks from Notion, and <code>MeetingStore.stored_context()</code> queries earlier meetings in SQLite. <code>AgentLoop._full_digest()</code> merges both into <code>&lt;meeting_digest&gt;</code> so questions like <em>“Hey BA, what did we decide in the last meeting?”</em> or <em>“What tasks are still open?”</em> are answered accurately.</p>
+          </div>
+        </section>
+      </section>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- PANEL 2: EXTENSION 1 — MORE NOTION DATABASES                          -->
+    <!-- ===================================================================== -->
+    <div class="diagram-panel" data-panel="notion-dbs">
+      <section class="frame" aria-label="Extension 1: More Notion Databases">
+        <div class="frame-head">
+          <div>
+            <h2>Extension 1 — More Notion Databases (Decisions, Requirements, Risks)</h2>
+            <p class="hint">Assignment extension row #1 · Shows how today’s Summary + Tasks Notion layer extends to 5 relational databases.</p>
+          </div>
+          <span class="status-pill ext">Assignment Extension (Diagram Only)</span>
+        </div>
+
+        <div class="arch-flow">
+          <div class="flow-stage">
+            <div>
+              <div class="stage-title">1. In-Call Utterance Stream</div>
+              <div class="stage-sub">Built today in <code>session.py</code></div>
+            </div>
+            <div class="stage-cards">
+              <div class="mini-card">
+                <strong>Committed Caption / Chat Line</strong>
+                <span><code>[04:12] Sara: "We decided to use the LFP battery pack for base trim."</code></span>
+              </div>
+              <span class="flow-arrow">→</span>
+              <div class="mini-card">
+                <strong>Local Signal Pre-Filter</strong>
+                <span>Fast regex check for task, decision, requirement, or risk cues before LLM call</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="flow-stage ext-stage">
+            <div>
+              <div class="stage-title">2. Multi-Entity Classifier</div>
+              <div class="stage-sub">Extension to <code>tasks_extract/</code></div>
+            </div>
+            <div class="stage-cards">
+              <div class="mini-card dashed">
+                <strong>Structured JSON Extractor (Web Search OFF)</strong>
+                <span>Classifies 8-line sliding window into: <code>tasks[]</code>, <code>decisions[]</code>, <code>requirements[]</code>, <code>risks[]</code></span>
+              </div>
+              <span class="flow-arrow">→</span>
+              <div class="mini-card dashed">
+                <strong>Normalized Dedup Cache</strong>
+                <span><code>dedup_key(entity_type, title)</code> prevents duplicate rows across rehearsals &amp; meetings</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="flow-stage">
+            <div>
+              <div class="stage-title">3. Built Notion Databases</div>
+              <div class="stage-sub">Active in today’s build</div>
+            </div>
+            <div class="stage-cards">
+              <div class="mini-card ok">
+                <strong>Meeting Summary DB (Built ✓)</strong>
+                <span><code>Title</code> · <code>Date</code> · <code>Summary</code> · <code>Transcript</code> ( + collapsed Toggle block)</span>
+              </div>
+              <div class="mini-card ok">
+                <strong>Tasks DB (Built ✓)</strong>
+                <span><code>Task</code> (title) · <code>Owner</code> (text) · <code>Due</code> (date) · <code>Status</code> · <code>Said by</code> · <code>Meeting</code></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="flow-stage ext-stage">
+            <div>
+              <div class="stage-title">4. Extended Notion Databases</div>
+              <div class="stage-sub">Linked to Summary Page via Relation</div>
+            </div>
+            <div class="stage-cards">
+              <div class="mini-card dashed">
+                <strong>Decisions DB (Extension)</strong>
+                <span><code>Decision</code> (title) · <code>Rationale</code> (rich_text) · <code>Decided By</code> · <code>Status</code> (Proposed / Approved) · <code>Meeting</code> (relation)</span>
+              </div>
+              <div class="mini-card dashed">
+                <strong>Requirements DB (Extension)</strong>
+                <span><code>Req ID</code> · <code>Requirement</code> (title) · <code>Category</code> (Powertrain / Chassis / ADAS) · <code>Priority</code> (Must / Should) · <code>Meeting</code></span>
+              </div>
+              <div class="mini-card dashed">
+                <strong>Risks DB (Extension)</strong>
+                <span><code>Risk</code> (title) · <code>Severity</code> (High / Med / Low) · <code>Likelihood</code> · <code>Mitigation</code> · <code>Owner</code> · <code>Meeting</code></span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Database</th>
+              <th>Status</th>
+              <th>Trigger Cues in Speech / Chat</th>
+              <th>Key Properties Mapped in <code>config/notion_schema.yaml</code></th>
+              <th>Chat Confirmation</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Meeting Summary</strong></td>
+              <td><span class="status-pill built">Built Today</span></td>
+              <td>“Hey BA, save the meeting” or call end / live dirty sync</td>
+              <td><code>Title</code>, <code>Date</code>, <code>Summary</code>, <code>Transcript</code> + Toggle children</td>
+              <td><code>✓ Notes saved: &lt;url&gt;</code></td>
+            </tr>
+            <tr>
+              <td><strong>Tasks</strong></td>
+              <td><span class="status-pill built">Built Today</span></td>
+              <td>Overheard commitment + owner + deadline, or “Hey BA, add a task…”</td>
+              <td><code>Task</code>, <code>Owner</code>, <code>Due</code>, <code>Status</code>, <code>Said by</code>, <code>Time</code></td>
+              <td><code>✓ Task added: Ali — cost sheet — Fri</code></td>
+            </tr>
+            <tr>
+              <td><strong>Decisions</strong></td>
+              <td><span class="status-pill ext">Extension</span></td>
+              <td>“We decided…”, “Agreed on…”, “Locked in…”, or <code>log_decision</code> tool</td>
+              <td><code>Decision</code>, <code>Rationale</code>, <code>Decided By</code>, <code>Timestamp</code>, <code>Meeting</code></td>
+              <td><code>✓ Decision logged: Use LFP pack for base trim</code></td>
+            </tr>
+            <tr>
+              <td><strong>Requirements</strong></td>
+              <td><span class="status-pill ext">Extension</span></td>
+              <td>“The vehicle must…”, “Requirement: …”, or <code>add_requirement</code> tool</td>
+              <td><code>Requirement</code>, <code>Subsystem</code>, <code>Priority</code>, <code>Target Spec</code>, <code>Meeting</code></td>
+              <td><code>✓ Requirement added: [Must] Cold-weather heat pump</code></td>
+            </tr>
+            <tr>
+              <td><strong>Risks</strong></td>
+              <td><span class="status-pill ext">Extension</span></td>
+              <td>“Risk is…”, “Bottleneck on…”, “14-week lead time risk…”</td>
+              <td><code>Risk</code>, <code>Severity</code>, <code>Likelihood</code>, <code>Mitigation</code>, <code>Owner</code>, <code>Meeting</code></td>
+              <td><code>✓ Risk logged: [High] SiC inverter single-source delay</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- PANEL 3: EXTENSION 2 — CAR PARTS / BOM TABLES & COMPARISONS           -->
+    <!-- ===================================================================== -->
+    <div class="diagram-panel" data-panel="bom-compare">
+      <section class="frame" aria-label="Extension 2: Car Parts / BOM and Option Comparisons">
+        <div class="frame-head">
+          <div>
+            <h2>Extension 2 — Car Parts / BOM Tables &amp; Option Comparisons</h2>
+            <p class="hint">Assignment extension row #2 (Task T08) · Deterministic BOM cost rollup and trade-off comparison over the local car knowledge base.</p>
+          </div>
+          <span class="status-pill ext">Assignment Extension (Diagram Only)</span>
+        </div>
+
+        <div class="arch-flow">
+          <div class="flow-stage">
+            <div>
+              <div class="stage-title">1. “Hey BA” Engineering Query</div>
+              <div class="stage-sub">Spoken or typed in Google Meet</div>
+            </div>
+            <div class="stage-cards">
+              <div class="mini-card">
+                <strong>BOM Request</strong>
+                <span><code>"Hey BA, build a BOM for the hybrid e-axle subsystem"</code></span>
+              </div>
+              <div class="mini-card">
+                <strong>Comparison Request</strong>
+                <span><code>"Hey BA, compare LFP vs NMC battery packs on cost, energy density, and cold weather"</code></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="flow-stage ext-stage">
+            <div>
+              <div class="stage-title">2. Tool Dispatch &amp; Data Source</div>
+              <div class="stage-sub">Reads local KB only; web search optional for public specs</div>
+            </div>
+            <div class="stage-cards">
+              <div class="mini-card dashed">
+                <strong><code>build_bom(system)</code> Tool</strong>
+                <span>Reads structured parts tables in <code>data/knowledge/</code> (CSV / Markdown tables). Computes <code>ext_cost = qty × unit_cost</code> and total rollup.</span>
+              </div>
+              <span class="flow-arrow">+</span>
+              <div class="mini-card dashed">
+                <strong><code>compare(option_a, option_b, criteria)</code> Tool</strong>
+                <span>Retrieves chunks for both options from <code>KnowledgeIndex</code>, aligns requested criteria, and marks missing values as <code>"not in pack"</code>.</span>
+              </div>
+              <span class="flow-arrow">→</span>
+              <div class="mini-card dashed">
+                <strong>Supply-Chain Risk Flags</strong>
+                <span>Automatically flags <code>[LONG-LEAD ≥12w]</code> and <code>[SINGLE-SOURCE]</code> suppliers on BOM rows.</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="flow-stage ext-stage">
+            <div>
+              <div class="stage-title">3. Meet Chat Table Formatter</div>
+              <div class="stage-sub">Bounded plain-text output (Q15 rules)</div>
+            </div>
+            <div class="stage-cards">
+              <div class="mini-card dashed">
+                <strong>Plain-Text Table Renderer</strong>
+                <span>Enforces Meet chat constraints: header + <code>≤ 8 rows</code>, <code>≤ 5 columns</code>, each line <code>≤ 120 characters</code>, with explicit source citation <code>(src: ...)</code>.</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid-2" style="margin-top:16px;">
+          <div>
+            <h3>Example <code>build_bom("hybrid e-axle")</code> Chat Output</h3>
+            <div class="terminal">BOM: Hybrid e-Axle Subsystem (src: hybrid.md, parts-catalog.csv)
+Part                 | Qty | Unit USD | Lead  | Supplier
+---------------------+-----+----------+-------+-------------------
+PMSM Traction Motor  |   1 |   $1,150 |  8 wk | BorgWarner
+SiC Dual Inverter    |   1 |     $890 | 14 wk | Bosch [SINGLE-SRC]
+Planetary Gearset    |   1 |     $620 |  6 wk | Schaeffler
+HV Wiring Harness    |   1 |     $240 |  4 wk | Aptiv
+Total: 1x($1150+$890+$620+$240) = $2,900 | Flag: SiC Inverter ≥12wk</div>
+          </div>
+          <div>
+            <h3>Example <code>compare("LFP", "NMC", ...)</code> Chat Output</h3>
+            <div class="terminal">Compare: LFP vs NMC Battery Chemistry (src: ev.md)
+Criterion        | LFP (LiFePO4)        | NMC (Nickel Mang Cobalt)
+-----------------+----------------------+-------------------------
+Pack Cost ($/kWh)| ~$95–$115 (lower)    | ~$130–$160 (higher)
+Energy Density   | 140–160 Wh/kg        | 220–260 Wh/kg
+Cold Weather     | Larger range drop    | Better sub-zero retention
+Cycle Life       | 3,000+ cycles (100%) | 1,500–2,000 cycles (80%)
+Best Fit         | Standard-range trims | Long-range / performance</div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- PANEL 4: EXTENSION 3 — SECOND PLATFORM & VOICE REPLIES (TTS)          -->
+    <!-- ===================================================================== -->
+    <div class="diagram-panel" data-panel="platform-voice">
+      <section class="frame" aria-label="Extension 3: Second Meeting Platform and Voice Replies">
+        <div class="frame-head">
+          <div>
+            <h2>Extension 3 — Second Meeting Platform &amp; Voice Replies (TTS)</h2>
+            <p class="hint">Assignment extension row #3 · Plugging Zoom / MS Teams into <code>MeetingPlatform</code> and adding spoken TTS replies alongside chat.</p>
+          </div>
+          <span class="status-pill ext">Assignment Extension (Diagram Only)</span>
+        </div>
+
+        <div class="arch-flow">
+          <div class="flow-stage">
+            <div>
+              <div class="stage-title">1. Unified Platform Contract</div>
+              <div class="stage-sub">Defined in <code>src/ba_agent/bot/base.py</code></div>
+            </div>
+            <div class="stage-cards">
+              <div class="mini-card ok">
+                <strong><code>MeetingPlatform</code> Protocol (Built ✓)</strong>
+                <span><code>join(url)</code> · <code>enable_captions()</code> · <code>drain_caption_frames()</code> · <code>collect_chat()</code> · <code>post_chat(text, reason)</code> · <code>leave()</code></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="flow-stage ext-stage">
+            <div>
+              <div class="stage-title">2. Platform Adapters</div>
+              <div class="stage-sub">1 Built + 2 Extension Adapters</div>
+            </div>
+            <div class="stage-cards">
+              <div class="mini-card ok">
+                <strong><code>GoogleMeetAdapter</code> (Built ✓)</strong>
+                <span>Playwright Chromium · Scrapes Google Meet live captions DOM + chat drawer · SDP video rejection</span>
+              </div>
+              <div class="mini-card dashed">
+                <strong><code>ZoomAdapter</code> (Extension)</strong>
+                <span>Joins Zoom Web Client (<code>app.zoom.us/wc/...</code>) · Enables Live Transcript CC panel · Reads speaker + text + chat</span>
+              </div>
+              <div class="mini-card dashed">
+                <strong><code>TeamsAdapter</code> (Extension)</strong>
+                <span>Joins MS Teams Web · Enables closed captions (<code>[data-tid="closed-captions-renderer"]</code>) · Reads chat &amp; roster</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="flow-stage ext-stage">
+            <div>
+              <div class="stage-title">3. Dual Reply Pipeline (Chat + TTS Voice)</div>
+              <div class="stage-sub">Chat stays primary; TTS speaks a short summary</div>
+            </div>
+            <div class="stage-cards">
+              <div class="mini-card ok">
+                <strong>1. Verified Chat Reply (Built ✓)</strong>
+                <span>Full text + citations <code>(src: ...)</code> posted to meeting chat via <code>post_chat()</code></span>
+              </div>
+              <span class="flow-arrow">→</span>
+              <div class="mini-card dashed">
+                <strong>2. TTS API Synthesis (Extension)</strong>
+                <span>Calls OpenAI <code>POST /v1/audio/speech</code> (<code>tts-1</code>) on a 1–2 sentence spoken summary (URLs stripped for natural speech)</span>
+              </div>
+              <span class="flow-arrow">→</span>
+              <div class="mini-card dashed">
+                <strong>3. Virtual Mic Playback (Extension)</strong>
+                <span>Streams PCM/WAV into PulseAudio virtual sink (<code>ba_virtual_mic</code>) → Unmutes Meet mic only during playback → Auto-remutes</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <aside class="callout">
+          <h3>Why Echo Prevention Is Automatic</h3>
+          <p>While the bot speaks over its virtual microphone, <code>is_bot_speaker(speaker, settings.meeting.bot_name)</code> in <code>session.py</code> already filters out any caption attributed to <strong>TechSol BA</strong>, so the bot never triggers on or transcribes its own spoken voice.</p>
+        </aside>
+      </section>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- PANEL 5: EXTENSION 4 — MEMORY ACROSS PAST MEETINGS                    -->
+    <!-- ===================================================================== -->
+    <div class="diagram-panel" data-panel="past-memory">
+      <section class="frame" aria-label="Extension 4: Memory Across Past Meetings">
+        <div class="frame-head">
+          <div>
+            <h2>Extension 4 — Memory Across Past Meetings</h2>
+            <p class="hint">Assignment extension row #4 · Cross-meeting recall of historical Notion summaries, open tasks, and SQLite records.</p>
+          </div>
+          <div style="display:flex; gap:6px;">
+            <span class="status-pill ext">Spec Extension</span>
+            <span class="status-pill proj">Implemented in Repo</span>
+          </div>
+        </div>
+
+        <div class="arch-flow">
+          <div class="flow-stage">
+            <div>
+              <div class="stage-title">1. Historical Storage Tiers</div>
+              <div class="stage-sub">Persisted across meetings</div>
+            </div>
+            <div class="stage-cards">
+              <div class="mini-card proj">
+                <strong>Notion Summary Database</strong>
+                <span><code>NotionService.list_summaries(limit=5)</code> fetches past meeting titles, dates, executive summaries, and transcript excerpts (cached 30s).</span>
+              </div>
+              <div class="mini-card proj">
+                <strong>Notion Tasks Database</strong>
+                <span><code>NotionService.list_tasks()</code> fetches all open &amp; completed tasks across every prior meeting with Owner, Due date, Status, and Said-by.</span>
+              </div>
+              <div class="mini-card proj">
+                <strong>Local SQLite <code>meeting.db</code></strong>
+                <span><code>MeetingStore.stored_context()</code> queries tasks and captions where <code>meeting_id != current_meeting_id</code> for instant local recall.</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="flow-stage proj-stage">
+            <div>
+              <div class="stage-title">2. Context Retrieval &amp; Merge</div>
+              <div class="stage-sub"><code>session.py:fetch_db_context()</code></div>
+            </div>
+            <div class="stage-cards">
+              <div class="mini-card proj">
+                <strong>Current Meeting Digest</strong>
+                <span><code>store.digest()</code>: Current participants, current meeting tasks, last 5 bot replies, and recent caption window (capped at 3,000 tokens).</span>
+              </div>
+              <span class="flow-arrow">+</span>
+              <div class="mini-card proj">
+                <strong>Cross-Meeting Context</strong>
+                <span><code>fetch_db_context()</code> appends <code>Stored Notion Tasks</code>, <code>Stored Notion Meeting Notes</code>, and <code>Previous Local Meeting Captions</code>.</span>
+              </div>
+              <span class="flow-arrow">→</span>
+              <div class="mini-card ok">
+                <strong><code>&lt;meeting_digest&gt;</code> XML Block</strong>
+                <span>Injected into <code>AgentLoop._answer()</code> (with web search OFF) and deterministic fallback <code>_answer_from_digest()</code>.</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="flow-stage">
+            <div>
+              <div class="stage-title">3. Cross-Meeting Task Deduplication</div>
+              <div class="stage-sub">Active at task creation time (Q25)</div>
+            </div>
+            <div class="stage-cards">
+              <div class="mini-card ok">
+                <strong><code>find_task(dedup_key(task, owner))</code></strong>
+                <span>Checks all historical rows in Notion Tasks DB. If a task from an earlier rehearsal or meeting matches, skips duplicate write and posts: <code>✓ Already tracked: Ali — send the cost sheet</code>.</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- PANEL 6: EXTENSION 5 — STRICT DATA-FLOW BOUNDARY                      -->
+    <!-- ===================================================================== -->
+    <div class="diagram-panel" data-panel="data-flow">
+      <section class="frame" aria-label="Extension 5: Strict Data-Flow Boundary">
+        <div class="frame-head">
+          <div>
+            <h2>Extension 5 — Data Flow: Own Knowledge Base; Internet Only to Fetch Data In</h2>
+            <p class="hint">Assignment extension row #5 · Visualizes the trust boundaries and outbound search scrubbers enforced in <code>src/ba_agent/guardrails/search.py</code>.</p>
+          </div>
+          <span class="status-pill built">Enforced in Code + Drawn on Diagram</span>
+        </div>
+
+        <div class="arch-flow">
+          <div class="flow-stage">
+            <div>
+              <div class="stage-title">Zone A — Private Meeting Boundary</div>
+              <div class="stage-sub">Never sent to public web search</div>
+            </div>
+            <div class="stage-cards">
+              <div class="mini-card">
+                <strong>Live Transcript &amp; Chat</strong>
+                <span>Speaker names, <code>[mm:ss]</code> captions, internal discussions, and participant roster in SQLite WAL</span>
+              </div>
+              <div class="mini-card">
+                <strong>Own Car Knowledge Base</strong>
+                <span><code>data/knowledge/*.md</code> (hybrid, EV, chassis, safety) — stored locally in repo and searched in-process</span>
+              </div>
+              <div class="mini-card">
+                <strong>Notion Workspace Records</strong>
+                <span>Private Notion page URLs (<code>notion.so/...</code>), meeting summaries, and assigned task rows</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="flow-stage guard-stage">
+            <div>
+              <div class="stage-title">Zone B — Outbound Guardrail Gate</div>
+              <div class="stage-sub"><code>guardrails/search.py</code> + <code>session.py</code></div>
+            </div>
+            <div class="stage-cards">
+              <div class="mini-card">
+                <strong>1. Transcript Snippet Check</strong>
+                <span>Rejects or strips any non-addressed caption snippet (<code>≥ 12 chars</code>) from the outbound search query</span>
+              </div>
+              <div class="mini-card">
+                <strong>2. Participant Name Scrubber</strong>
+                <span>Strips participant names via word-boundary regex while preserving car brands (e.g., Ford, Lincoln, Mercedes)</span>
+              </div>
+              <div class="mini-card">
+                <strong>3. URL &amp; Prompt Isolation</strong>
+                <span>Blocks <code>notion.so</code> / <code>meet.google.com</code> URLs and wraps prompt sections in <code>&lt;meeting_digest&gt;</code> XML tags</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="flow-stage">
+            <div>
+              <div class="stage-title">Zone C — External Service Paths</div>
+              <div class="stage-sub">Strict per-endpoint rules</div>
+            </div>
+            <div class="stage-cards">
+              <div class="mini-card ok">
+                <strong>Public Web Search (Inbound Car Data Only)</strong>
+                <span>Outbound: <strong>ONLY sanitized car question</strong> (e.g. <code>"2025 Toyota Camry hybrid MPG"</code>)<br>Inbound: Public car specs &amp; URLs fetched IN</span>
+              </div>
+              <div class="mini-card ok">
+                <strong>Provided LLM API (OpenAI Responses)</strong>
+                <span>Allowed model path for synthesis, task extraction (<code>web_search=False</code>), and meeting summary (<code>web_search=False</code>)</span>
+              </div>
+              <div class="mini-card blocked">
+                <strong>Blocked Outbound Leak</strong>
+                <span>Queries containing transcript lines, participant lists, or Notion links are scrubbed or rejected before any HTTP call</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Data / Payload Type</th>
+              <th>Local SQLite &amp; KB</th>
+              <th>Provided LLM API (<code>web_search=False</code>)</th>
+              <th>Public Web Search (<code>search_cars</code>)</th>
+              <th>Notion API</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Sanitized Car Question</strong> (e.g. <code>" Hyundai Ioniq 5 battery kWh"</code>)</td>
+              <td>Queried first</td>
+              <td>Allowed</td>
+              <td><strong>Allowed (Fetches public car data IN)</strong></td>
+              <td>Not sent unless part of summary</td>
+            </tr>
+            <tr>
+              <td><strong>Non-Addressed Meeting Transcript Lines</strong></td>
+              <td>Stored in SQLite</td>
+              <td>Allowed for summary &amp; task extract</td>
+              <td><strong>NEVER SENT (Blocked by <code>query_allowed</code>)</strong></td>
+              <td>Saved in summary page &amp; toggle</td>
+            </tr>
+            <tr>
+              <td><strong>Participant Names / Roster</strong> (e.g. <code>"Sara, Ali"</code>)</td>
+              <td>Stored in SQLite</td>
+              <td>Allowed in digest</td>
+              <td><strong>NEVER SENT (Scrubbed by <code>strip_meeting_text</code>)</strong></td>
+              <td>Stored as task <code>Owner</code> / <code>Said by</code></td>
+            </tr>
+            <tr>
+              <td><strong>Notion / Meet URLs</strong> (<code>notion.so/...</code>)</td>
+              <td>Stored in <code>meta</code></td>
+              <td>Not needed</td>
+              <td><strong>NEVER SENT (Hard-blocked)</strong></td>
+              <td>Target resource</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- PANEL 7: BUILT PROJECT EXTENSIONS (CHROME + CLOUDFLARE + LIVE HUD)    -->
+    <!-- ===================================================================== -->
+    <div class="diagram-panel" data-panel="project-ext">
+      <section class="frame" aria-label="Built Project Extensions: Chrome Extension, Cloudflare Container, and Live HUD">
+        <div class="frame-head">
+          <div>
+            <h2>Built Project Extensions — Chrome Extension, Cloudflare Container &amp; Live HUD</h2>
+            <p class="hint">Built in <code>extension/</code>, <code>cloudflare/src/index.ts</code>, and <code>src/ba_agent/session.py</code> to automate joining, lobby admission, live status, and multi-meeting switching.</p>
+          </div>
+          <span class="status-pill proj">Built &amp; Tested in Repo</span>
+        </div>
+
+        <div class="arch-flow">
+          <div class="flow-stage proj-stage">
+            <div>
+              <div class="stage-title">1. Chrome Extension (MV3)</div>
+              <div class="stage-sub"><code>extension/content.js</code> + <code>background.js</code></div>
+            </div>
+            <div class="stage-cards">
+              <div class="mini-card proj">
+                <strong>Auto-Detect Google Meet</strong>
+                <span>Detects <code>https://meet.google.com/xxx-xxxx-xxx</code> on tab open or call join; deduplicates per meeting code for 3h.</span>
+              </div>
+              <span class="flow-arrow">→</span>
+              <div class="mini-card proj">
+                <strong>Auto-Admit Bot from Lobby</strong>
+                <span><code>tryAutoAdmitBot()</code> scans Meet’s admission dialogs every 1s and clicks <strong>Admit</strong> when <em>TechSol BA</em> knocks.</span>
+              </div>
+              <span class="flow-arrow">→</span>
+              <div class="mini-card proj">
+                <strong>In-Call Toast Overlay</strong>
+                <span><code>#techsol-ba-toast</code> displays real-time bot activity trails (e.g. <em>Searching knowledge base → Replied to Sara ✓</em>).</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="flow-stage proj-stage">
+            <div>
+              <div class="stage-title">2. Cloudflare Worker &amp; Container</div>
+              <div class="stage-sub"><code>cloudflare/src/index.ts</code> + <code>wrangler.jsonc</code></div>
+            </div>
+            <div class="stage-cards">
+              <div class="mini-card proj">
+                <strong><code>POST /join</code> Webhook</strong>
+                <span>Validates Meet code URL, checks optional <code>Bearer</code> secret via <code>timingSafeEqual</code>, stores active URL in DO storage, and boots or switches the container.</span>
+              </div>
+              <span class="flow-arrow">→</span>
+              <div class="mini-card proj">
+                <strong><code>GET /status?peek=1</code></strong>
+                <span>Returns <code>{ idle: true }</code> when container is asleep without waking it; proxies live status &amp; activity events when running.</span>
+              </div>
+              <span class="flow-arrow">→</span>
+              <div class="mini-card proj">
+                <strong><code>BaContainer</code> (<code>standard-1</code>)</strong>
+                <span>4 GiB RAM, 0.5 vCPU, <code>sleepAfter = "3h"</code>, 120s port-ready timeout with retry loop for cold container provisioning.</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="flow-stage proj-stage">
+            <div>
+              <div class="stage-title">3. Container Runtime Enhancements</div>
+              <div class="stage-sub"><code>src/ba_agent/session.py</code> + <code>status.py</code></div>
+            </div>
+            <div class="stage-cards">
+              <div class="mini-card proj">
+                <strong>Multi-Meeting <code>keep_alive</code> Loop</strong>
+                <span>When a meeting ends or a new <code>POST /join</code> arrives, Chromium stays warm and signed in, switching directly to the next Meet URL.</span>
+              </div>
+              <span class="flow-arrow">+</span>
+              <div class="mini-card proj">
+                <strong>Live Notion Sync (<code>live_notes</code>)</strong>
+                <span>Debounces <code>notes_dirty</code> events (1.5s) and updates the Notion summary page continuously during the call.</span>
+              </div>
+              <span class="flow-arrow">+</span>
+              <div class="mini-card proj">
+                <strong>Resilient Fallbacks</strong>
+                <span>Deterministic regex task extraction (<code>fallback_overheard_tasks</code>) and KB/digest answer fallback if LLM times out.</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- SUMMARY MATRIX OF ALL ASSIGNMENT REQUIREMENTS & EXTENSIONS            -->
+    <!-- ===================================================================== -->
+    <section style="margin-top: 28px">
+      <h2>Complete Assignment &amp; Extension Coverage Matrix</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Category</th>
+            <th>Item from <code>TechSol_AI_Engineer_Assignment_new.pdf</code></th>
+            <th>Status</th>
+            <th>Where in Code / Diagram</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Must #1</strong></td>
+            <td>Join a Google Meet, Zoom or Teams call (pick one)</td>
+            <td><span class="status-pill built">Built Today</span></td>
+            <td><code>src/ba_agent/bot/google_meet/adapter.py</code> (Google Meet via Playwright + SDP audio-only)</td>
+          </tr>
+          <tr>
+            <td><strong>Must #2</strong></td>
+            <td>Write down what is said, with who said it and when</td>
+            <td><span class="status-pill built">Built Today</span></td>
+            <td><code>src/ba_agent/captions/</code> + <code>src/ba_agent/memory/store.py</code> (Speaker + <code>[mm:ss]</code> in SQLite WAL)</td>
+          </tr>
+          <tr>
+            <td><strong>Must #3</strong></td>
+            <td>Reply in the meeting chat when someone says “Hey BA”</td>
+            <td><span class="status-pill built">Built Today</span></td>
+            <td><code>src/ba_agent/trigger/detector.py</code> + <code>src/ba_agent/agent/loop.py</code></td>
+          </tr>
+          <tr>
+            <td><strong>Must #4</strong></td>
+            <td>Answer car questions from its own car knowledge base (you build it)</td>
+            <td><span class="status-pill built">Built Today</span></td>
+            <td><code>data/knowledge/*.md</code> + <code>src/ba_agent/knowledge/search.py</code> + guarded <code>search_cars</code></td>
+          </tr>
+          <tr>
+            <td><strong>Must #5</strong></td>
+            <td>Save a summary and the tasks (owner + due date) to Notion</td>
+            <td><span class="status-pill built">Built Today</span></td>
+            <td><code>src/ba_agent/notion/client.py</code> + <code>src/ba_agent/tasks_extract/extractor.py</code></td>
+          </tr>
+          <tr>
+            <td><strong>Extension #1</strong></td>
+            <td>More Notion databases (Decisions, Requirements, Risks)</td>
+            <td><span class="status-pill ext">Diagram Extension</span></td>
+            <td>Tab 1 (Unified Diagram) &amp; Tab 2 (Relational 5-DB Notion Architecture)</td>
+          </tr>
+          <tr>
+            <td><strong>Extension #2</strong></td>
+            <td>Car parts / BOM tables and option comparisons</td>
+            <td><span class="status-pill ext">Diagram Extension</span></td>
+            <td>Tab 1 (Unified Diagram) &amp; Tab 3 (<code>build_bom</code> &amp; <code>compare</code> pipeline)</td>
+          </tr>
+          <tr>
+            <td><strong>Extension #3</strong></td>
+            <td>Second meeting platform and voice replies</td>
+            <td><span class="status-pill ext">Diagram Extension</span></td>
+            <td>Tab 1 (Unified Diagram) &amp; Tab 4 (<code>ZoomAdapter</code>/<code>TeamsAdapter</code> + TTS virtual mic)</td>
+          </tr>
+          <tr>
+            <td><strong>Extension #4</strong></td>
+            <td>Memory across past meetings</td>
+            <td><span class="status-pill proj">Diagram + Built Recall</span></td>
+            <td>Tab 1 &amp; Tab 5 + <code>notion.database_context()</code> &amp; <code>store.stored_context()</code></td>
+          </tr>
+          <tr>
+            <td><strong>Extension #5</strong></td>
+            <td>Data flow: own KB; internet only to fetch data in, meeting data never sent out</td>
+            <td><span class="status-pill built">Diagram + Enforced</span></td>
+            <td>Tab 1 &amp; Tab 6 + <code>src/ba_agent/guardrails/search.py</code> (<code>query_allowed</code>, <code>strip_meeting_text</code>)</td>
+          </tr>
+          <tr>
+            <td><strong>Project Ext</strong></td>
+            <td>Chrome Extension auto-join, lobby auto-admit, Cloudflare Container, Live HUD</td>
+            <td><span class="status-pill proj">Built Project Ext</span></td>
+            <td>Tab 1 (Lane 0) &amp; Tab 7 + <code>extension/</code> + <code>cloudflare/src/index.ts</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+
+  <script>
+    var arrow = '<svg width="24" height="12" viewBox="0 0 24 12" aria-hidden="true"><path class="shaft" d="M1 6h19" fill="none" stroke="currentColor" stroke-width="1.4"></path><path d="M16 2l5 4-5 4" fill="none" stroke="currentColor" stroke-width="1.4"></path></svg>';
+    var leads = {
+      all: "One diagram showing today’s build (solid) and how it extends (dashed), plus the built Chrome & Cloudflare automation layer. Click any box for implementation details.",
+      built: "Highlighting the 5 Must-Have requirements built today: Google Meet adapter, timestamped caption store, “Hey BA” chat replies, local car knowledge base, and Notion summary + tasks.",
+      "spec-ext": "Highlighting the 5 Assignment Extensions from TechSol_AI_Engineer_Assignment_new.pdf: extra Notion DBs (Decisions, Requirements, Risks), BOM & option comparison, 2nd platform & TTS voice replies, cross-meeting memory, and strict data-flow rules.",
+      "proj-ext": "Highlighting the extra Project Extensions built in this repository: Chrome Extension auto-summon & lobby auto-admit, Cloudflare Worker + Container orchestration, live in-call HUD toasts, and cross-meeting database recall.",
+      boundary: "Highlighting the Data-Flow Privacy Boundary: local car KB stays on the server; OpenAI web_search receives ONLY sanitized car questions to fetch public car data in; meeting transcripts, participant names, and Notion URLs never leave to web search."
+    };
+
+    var currentTab = "unified";
+    var currentView = "all";
+    var selectedNode = "";
+
+    document.querySelectorAll(".link").forEach(function (el) {
+      el.innerHTML = arrow;
+    });
+
+    function layers(node) {
+      return (node.dataset.layer || "").split(/\s+/).filter(Boolean);
+    }
+
+    function isNodeDim(node) {
+      if (currentView === "all") return false;
+      if (currentView === "boundary") {
+        return node.dataset.boundary !== "true" && node.dataset.id !== "local-kb";
+      }
+      return layers(node).indexOf(currentView) === -1;
+    }
+
+    function isNodeHot(node) {
+      if (currentView === "all") return false;
+      if (currentView === "boundary") {
+        return node.dataset.boundary === "true" || node.dataset.id === "local-kb";
+      }
+      return layers(node).indexOf(currentView) !== -1;
+    }
+
+    function renderUnified() {
+      document.body.dataset.view = currentView;
+      var leadEl = document.getElementById("unified-lead");
+      if (leadEl && leads[currentView]) {
+        leadEl.textContent = leads[currentView];
+      }
+      document.querySelectorAll("[data-view-btn]").forEach(function (btn) {
+        btn.setAttribute("aria-pressed", btn.dataset.viewBtn === currentView ? "true" : "false");
+      });
+      document.querySelectorAll(".node").forEach(function (node) {
+        var on = node.dataset.id === selectedNode;
+        var dim = isNodeDim(node) && !on;
+        var hot = isNodeHot(node);
+        node.classList.toggle("on", on);
+        node.classList.toggle("hot", hot);
+        node.classList.toggle("dim", dim);
+        node.setAttribute("aria-pressed", on ? "true" : "false");
+      });
+      document.querySelectorAll(".link[data-from]").forEach(function (el) {
+        var from = document.querySelector('.node[data-id="' + el.dataset.from + '"]');
+        var to = document.querySelector('.node[data-id="' + el.dataset.to + '"]');
+        var state = "rest";
+        if (currentView !== "all") {
+          state = from && to && !isNodeDim(from) && !isNodeDim(to) ? "hot" : "quiet";
+        }
+        el.classList.toggle("hot", state === "hot");
+        el.classList.toggle("quiet", state === "quiet");
+      });
+      document.querySelectorAll("#unified-detail .detail-block").forEach(function (block) {
+        block.hidden = block.dataset.detail !== selectedNode;
+      });
+    }
+
+    function renderTabs() {
+      document.body.dataset.tab = currentTab;
+      document.querySelectorAll("[data-tab-btn]").forEach(function (btn) {
+        btn.setAttribute("aria-selected", btn.dataset.tabBtn === currentTab ? "true" : "false");
+      });
+      document.querySelectorAll(".diagram-panel").forEach(function (panel) {
+        panel.classList.toggle("active", currentTab === "all" || panel.dataset.panel === currentTab);
+      });
+    }
+
+    document.querySelectorAll("[data-tab-btn]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        currentTab = btn.dataset.tabBtn;
+        renderTabs();
+      });
+    });
+
+    document.querySelectorAll("[data-view-btn]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        currentView = btn.dataset.viewBtn;
+        renderUnified();
+      });
+    });
+
+    document.querySelectorAll(".node").forEach(function (node) {
+      node.addEventListener("click", function () {
+        selectedNode = selectedNode === node.dataset.id ? "" : node.dataset.id;
+        renderUnified();
+      });
+    });
+
+    document.querySelectorAll(".clear").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        selectedNode = "";
+        renderUnified();
+      });
+    });
+
+    renderTabs();
+    renderUnified();
+  </script>
+</body>
+</html>
