@@ -194,7 +194,7 @@ class MeetingStore:
                 result.append(rec)
         return result
 
-    def stored_context(self, max_tasks: int = 20, max_captions: int = 15) -> str:
+    def stored_context(self, max_tasks: int = 50, max_captions: int = 40) -> str:
         sections: list[str] = []
         current_keys = {t.key for t in self.tasks() if t.key}
         past_tasks = [t for t in self.all_tasks() if t.key not in current_keys]

@@ -118,3 +118,58 @@ def test_t05_u8_chat_and_one_word_commands_emit_immediately() -> None:
     speech_cmd = detector.on_line("Sara", "Hey BA, summarize", "speech", 4.0, caption_id="c1")
     assert len(speech_cmd) == 1
     assert speech_cmd[0].question == "summarize"
+
+
+def test_t05_u9_wake_truncates_continued_speech_and_commentary() -> None:
+    # 1. Sentence boundary stops the task/question when user continues speaking
+    hit1 = match_wake(
+        "Hey BA, add a task for Ali to finish the cost sheet by Friday. "
+        "Now it's going to generate out and I have given it a task."
+    )
+    assert hit1 is not None
+    assert hit1.question == "add a task for Ali to finish the cost sheet by Friday"
+
+    # 2. Discourse continuation marker stops run-on ASR speech without punctuation
+    hit2 = match_wake(
+        "Hey, B.A., can you tell me the tasks that I have for everyone "
+        "now it's going to generate out"
+    )
+    assert hit2 is not None
+    assert hit2.question == "can you tell me the tasks that I have for everyone"
+
+    # 3. Bare "Hey BA." followed by third-person commentary to the room is treated as bare trigger
+    hit3 = match_wake("Hey BA. And it basically says listening.")
+    assert hit3 is not None
+    assert hit3.question == ""
+
+    # 4. Multiple wake phrases in one cumulative block pick the latest valid question
+    hit4 = match_wake(
+        "Hey BA. And it basically says listening. Okay, let's see. "
+        "Hey, B.A., can you tell me the tasks that I have for everyone?"
+    )
+    assert hit4 is not None
+    assert hit4.question == "can you tell me the tasks that I have for everyone"
+
+
+def test_t05_u10_detector_deduplicates_extended_cumulative_speech() -> None:
+    detector = TriggerDetector(pause_wait_s=5, dedup_window_s=3, followup_window_s=20)
+    ev1 = detector.on_line(
+        "Ali",
+        "Hey BA, can you tell me the tasks that I have for everyone?",
+        "speech",
+        10.0,
+        caption_id="c1",
+    )
+    assert len(ev1) == 1
+    assert ev1[0].question == "can you tell me the tasks that I have for everyone"
+
+    # 6 seconds later (outside 3s dedup_window_s), cumulative redraw with trailing words
+    ev2 = detector.on_line(
+        "Ali",
+        "Hey BA, can you tell me the tasks that I have for everyone? Now I am still talking",
+        "speech",
+        16.0,
+        caption_id="c2",
+    )
+    assert ev2 == []
+

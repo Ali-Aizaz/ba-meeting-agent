@@ -124,6 +124,51 @@ def test_t03_repunctuated_cumulative_row_strips_prefix_and_ignores_punctuation_o
     ]
 
 
+def test_t03_wake_sentence_commits_immediately_when_speaker_continues_talking() -> None:
+    stabilizer = Stabilizer(stable_ms=800)
+    # Speaker says "Hey BA, add a task..." and keeps talking without an 800ms pause.
+    f1 = _region(
+        _row(
+            "1",
+            "Ali",
+            "Hey BA, add a task for Sara to review the budget by Friday",
+        )
+    )
+    f2 = _region(
+        _row(
+            "1",
+            "Ali",
+            "Hey BA, add a task for Sara to review the budget by Friday. "
+            "Now it's going to generate out",
+        )
+    )
+    f3 = _region(
+        _row(
+            "1",
+            "Ali",
+            "Hey BA, add a task for Sara to review the budget by Friday. "
+            "Now it's going to generate out and I am still speaking.",
+        )
+    )
+    lines = []
+    lines += stabilizer.push_frame(parse_caption_html(f1), 0.0)
+    assert lines == []
+    # At t=0.3s (before 0.8s silence), speaker starts a new sentence after the task:
+    # the wake sentence is immediately split & committed!
+    lines += stabilizer.push_frame(parse_caption_html(f2), 0.3)
+    assert [(line.speaker, line.text) for line in lines] == [
+        ("Ali", "Hey BA, add a task for Sara to review the budget by Friday."),
+    ]
+    # Continued speech updates the open tail without re-emitting "Hey BA"
+    lines += stabilizer.push_frame(parse_caption_html(f3), 0.6)
+    lines += stabilizer.push_frame(parse_caption_html(f3), 1.5)
+    assert [(line.speaker, line.text) for line in lines] == [
+        ("Ali", "Hey BA, add a task for Sara to review the budget by Friday."),
+        ("Ali", "Now it's going to generate out and I am still speaking."),
+    ]
+
+
+
 
 def test_t03_u2_meeting_clock() -> None:
     assert format_meeting_time(0) == "[00:00]"

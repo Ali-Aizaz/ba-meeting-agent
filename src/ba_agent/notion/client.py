@@ -280,6 +280,7 @@ class NotionService:
         if not refresh and self._tasks_loaded:
             return None
         cursor = None
+        matched_page_id: str | None = None
         while True:
             body: dict = {"page_size": 100}
             if cursor:
@@ -291,11 +292,13 @@ class NotionService:
                     self._task_cache[row_key] = page_id
                 if row_key and rec is not None:
                     self._task_records[row_key] = rec
-                if row_key == key:
-                    if not data.get("has_more"):
-                        self._tasks_loaded = True
-                        self._tasks_loaded_at = time.monotonic()
-                    return page_id
+                if row_key == key and matched_page_id is None:
+                    matched_page_id = page_id
+            if matched_page_id is not None:
+                if not data.get("has_more"):
+                    self._tasks_loaded = True
+                    self._tasks_loaded_at = time.monotonic()
+                return matched_page_id
             if not data.get("has_more"):
                 self._tasks_loaded = True
                 self._tasks_loaded_at = time.monotonic()
@@ -339,7 +342,7 @@ class NotionService:
             return list(self._task_records.values())
         return list(records.values())
 
-    async def list_summaries(self, *, refresh: bool = False, limit: int = 10) -> list[dict]:
+    async def list_summaries(self, *, refresh: bool = False, limit: int = 25) -> list[dict]:
         if not self.schema.summary_db:
             return []
         now = time.monotonic()
@@ -382,8 +385,8 @@ class NotionService:
         self,
         *,
         refresh: bool = False,
-        max_tasks: int = 20,
-        max_summaries: int = 5,
+        max_tasks: int = 50,
+        max_summaries: int = 15,
     ) -> str:
         sections: list[str] = []
         tasks = await self.list_tasks(refresh=refresh)

@@ -280,9 +280,38 @@
     }
   }
 
-  const WAKE_RE =
-    /\b(?:hey|hi|ok|okay|hello|yo)\s*,?\s*(?:techsol\s+)?(?:ba|b\.a\.|bea|va|bia)\b|^@ba\b/i;
+  const WAKE_GLOBAL_RE =
+    /\b(?:hey|hi|high|ok|okay|k|hello|yo)\s*,?\s*(?:techsol\s+)?(?:ba|b\.a\.|bea|va|bia)\b|(?:^|\s)@ba\b/gi;
   const LOOKALIKE_RE = /\b(?:hey\s+(?:bay|bob|bae)|bay\s+area|the\s+ba\s+team)\b/i;
+  let lastSeenWakeAnchor = "";
+
+  function extractWakeSentence(afterWake) {
+    const cleaned = afterWake.replace(/\s+/g, " ").trim();
+    const wakeMatch =
+      /^(?:@ba|(?:hey|hi|high|ok|okay|k|hello|yo)\s*,?\s*(?:techsol\s+)?(?:ba|b\.a\.|bea|va|bia))\b[.,!?;:\s-]*/i.exec(
+        cleaned,
+      );
+    const wakePrefix = wakeMatch ? wakeMatch[0].trim() : "";
+    const rest = wakeMatch ? cleaned.slice(wakeMatch[0].length).trim() : cleaned;
+    if (!rest) {
+      return { sentence: wakePrefix, completedWithTail: false };
+    }
+    const contSplit = rest.split(
+      /\s+(?:now\s+it(?:'s|s|\s+is)?|now\s+i(?:'m|m|\s+am)?|and\s+now|so\s+now|and\s+it(?:'s|s|\s+is|\s+basically)?|it\s+basically|as\s+you\s+can\s+see)\b/i,
+    );
+    let firstClause = contSplit[0].trim();
+    let hasContinuationTail = contSplit.length > 1 && contSplit[1].trim().length > 0;
+
+    const sentMatch = /^([^.?!;]+[.?!;])\s+(.+)$/.exec(firstClause);
+    if (sentMatch) {
+      firstClause = sentMatch[1].trim();
+      hasContinuationTail = true;
+    }
+    return {
+      sentence: `${wakePrefix} ${firstClause}`.trim().slice(0, 80),
+      completedWithTail: hasContinuationTail,
+    };
+  }
 
   function detectLocalWakePhrase() {
     if (!isInActiveCall()) return;
@@ -308,9 +337,22 @@
     const now = Date.now();
     for (const raw of candidates) {
       if (!raw || LOOKALIKE_RE.test(raw)) continue;
-      if (WAKE_RE.test(raw)) {
-        const snippet = raw.slice(-80);
-        if (snippet !== lastLocalTriggerText || now - lastLocalTriggerAt > 5000) {
+      WAKE_GLOBAL_RE.lastIndex = 0;
+      let match = null;
+      let lastMatch = null;
+      while ((match = WAKE_GLOBAL_RE.exec(raw)) !== null) {
+        lastMatch = match;
+      }
+      if (lastMatch) {
+        const wakeIdx = lastMatch.index;
+        const afterWake = raw.slice(wakeIdx);
+        const { sentence: snippet, completedWithTail } = extractWakeSentence(afterWake);
+        const anchorKey = `${wakeIdx}:${raw.slice(0, Math.min(wakeIdx + 12, raw.length))}`;
+        if (anchorKey === lastSeenWakeAnchor && (completedWithTail || snippet === lastLocalTriggerText)) {
+          break;
+        }
+        if (snippet !== lastLocalTriggerText && (anchorKey !== lastSeenWakeAnchor || now - lastLocalTriggerAt <= 4000)) {
+          lastSeenWakeAnchor = anchorKey;
           lastLocalTriggerText = snippet;
           lastLocalTriggerAt = now;
           fastPollUntil = now + 20000;
@@ -370,7 +412,7 @@
           const trail = recentTrail.slice(0, -1);
           showToast(activeText, tone, trail);
         }
-      } else if (response.activity) {
+      } else if (response.activity && response.activity_kind === "working") {
         fastPollUntil = Date.now() + 10000;
         showToast(
           response.activity,

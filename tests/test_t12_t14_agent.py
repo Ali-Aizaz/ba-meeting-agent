@@ -385,3 +385,99 @@ async def test_t12_off_topic_non_car_questions_are_refused() -> None:
     assert searched == []
 
 
+@pytest.mark.asyncio
+async def test_t12_checks_previous_meetings_and_tasks_db_even_when_llm_misses_or_calls_tool() -> None:
+    db_ctx = (
+        "Stored Notion Tasks:\n"
+        "- Ali: Send competitor pricing table for 3 compact SUVs (due: 2026-04-16) [Todo]\n"
+        "- Omar: Finalize brake pad supplier shortlist (due: 2026-04-17) [Done]\n"
+        "Stored Local Tasks:\n"
+        "- Sara: Prepare Q2 warranty slide deck (due: 2026-04-20) [Todo]\n"
+        "Stored Notion Meeting Notes:\n"
+        "- powertrain-kickoff (2026-04-10): Agreed to target a 60 kWh LFP pack for the entry trim.\n"
+        "Previous Local Meeting Captions:\n"
+        "[02:10] Omar: We also locked the thermal valve supplier for the prototype."
+    )
+
+    class EmptyOrFalseEmptyLLM:
+        def __init__(self, mode: str) -> None:
+            self.mode = mode
+
+        async def respond(self, input, tools=None, *, enable_web_search=False, timeout_s=None):
+            if self.mode == "empty":
+                return LLMResponse(text="")
+            if self.mode == "false_empty":
+                return LLMResponse(text="There are no tasks in this meeting.")
+            if self.mode == "spurious_create_task" and tools:
+                return LLMResponse(
+                    function_calls=[
+                        FunctionCall(name="create_task", arguments={"task": "", "owner": "Ali"})
+                    ]
+                )
+            return LLMResponse(
+                text="Ali has Send competitor pricing table, Omar has Finalize brake pad supplier shortlist, and Sara has Prepare Q2 warranty slide deck."
+            )
+
+    async def search_cars(query: str) -> WebResult:
+        return WebResult()
+
+    agent, poster, _ = _agent("unused", search_cars)
+    agent.digest = lambda: "Participants: Ali\nTasks:\nnone\nRecent:"
+    agent.fetch_db_context = lambda: db_ctx
+
+    # 1. When LLM returns empty string on "can you tell me the tasks that I have for everyone?",
+    # agent falls back to full_digest (including Notion & local tasks DB).
+    agent.llm = EmptyOrFalseEmptyLLM("empty")
+    await agent.handle(
+        _event("can you tell me the tasks that I have for everyone?", trigger_id="t_all_tasks")
+    )
+    reply1 = poster.posts[-1][0]
+    assert "Ali: Send competitor pricing table" in reply1
+    assert "Omar: Finalize brake pad supplier shortlist" in reply1
+    assert "Sara: Prepare Q2 warranty slide deck" in reply1
+
+    # 2. When LLM falsely claims "There are no tasks in this meeting", agent overrides with DB tasks.
+    agent.llm = EmptyOrFalseEmptyLLM("false_empty")
+    await agent.handle(_event("what tasks do we have?", trigger_id="t_false_empty"))
+    reply2 = poster.posts[-1][0]
+    assert "Ali: Send competitor pricing table" in reply2
+
+    # 3. When LLM spuriously calls create_task with missing fields on a lookup question,
+    # agent ignores the bad tool call instead of arming follow-up / nagging for due date.
+    agent.llm = EmptyOrFalseEmptyLLM("spurious_create_task")
+    await agent.handle(_event("what tasks are assigned to Ali?", trigger_id="t_spurious_tool"))
+    reply3 = poster.posts[-1][0]
+    assert "When is that due?" not in reply3
+    assert "Who should own that" not in reply3
+    assert "Send competitor pricing table" in reply3
+    assert agent.pending_task is None
+    assert agent.trigger.followup is None
+
+    # 4. When user gives a task command matching an existing task in the DB without repeating the due date,
+    # agent resolves the existing task from the tasks DB instead of asking "When is that due?".
+    created_records = []
+
+    async def record_create_task(rec):
+        created_records.append(rec)
+        return TaskWrite(
+            False,
+            f"↻ Already tracked for {rec.owner}: {rec.task}",
+            page_id="existing_p1",
+            key=rec.key,
+        )
+
+    agent.create_task = record_create_task
+    await agent.handle(
+        _event(
+            "add a task for Ali to send competitor pricing table for 3 compact SUVs",
+            trigger_id="t_existing_task_cmd",
+        )
+    )
+    assert len(created_records) == 1
+    assert created_records[0].owner == "Ali"
+    assert created_records[0].due == date(2026, 4, 16)
+    assert "Already tracked" in poster.posts[-1][0]
+    assert agent.trigger.followup is None
+
+
+

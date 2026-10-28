@@ -27,7 +27,7 @@ from ba_agent.notion.messages import notes_saved, task_failed
 from ba_agent.notion.schema import load_notion_schema
 from ba_agent.speakers import is_bot_speaker, load_aliases, normalize_speaker
 from ba_agent.status import StatusState, start_status_server
-from ba_agent.tasks_extract.dates import today_in
+from ba_agent.tasks_extract.dates import parse_due, today_in
 from ba_agent.tasks_extract.extractor import (
     apply_overheard,
     fallback_overheard_tasks,
@@ -427,6 +427,7 @@ async def _loops(
     next_url_event: asyncio.Event | None = None,
 ) -> None:
     trigger_queue: asyncio.Queue[TriggerEvent | None] = asyncio.Queue()
+    last_addressed_at: dict[str, float] = {}
 
     async def on_caption(raw) -> None:
         speaker = normalize_speaker(raw.speaker, aliases)
@@ -451,12 +452,12 @@ async def _loops(
             getattr(trigger, "pending", None) is not None
             or getattr(trigger, "_pending", None) is not None
         )
-        if addressed_caption_ids is not None and (
-            events
-            or is_addressed_line(raw.text)
-            or has_pending
-        ):
+        addressed_now = bool(events or is_addressed_line(raw.text) or has_pending)
+        if addressed_caption_ids is not None and addressed_now:
             addressed_caption_ids.add(line.id)
+        if addressed_now:
+            last_addressed_at[speaker] = raw.end_s
+            extractor.recent.clear()
         if has_pending and not events and on_activity is not None:
             on_activity(
                 f'Heard "Hey BA" from {speaker} — listening for question (5s)…',
@@ -470,8 +471,12 @@ async def _loops(
                     "working",
                 )
             trigger_queue.put_nowait(event)
-        if not events and not is_addressed_line(raw.text):
-            extractor.note(line)
+        if not addressed_now:
+            since_trig = raw.start_s - last_addressed_at.get(speaker, -999.0)
+            if since_trig > 6.0 or parse_due(
+                raw.text, today=today_in(settings.meeting.timezone)
+            ) is not None:
+                extractor.note(line)
 
     async def captions() -> None:
         while not adapter.ended_event.is_set():
@@ -758,7 +763,10 @@ class _Extractor:
                 matching = [
                     item for item in candidates if might_contain_task(item.text, today=today)
                 ]
-                if matching:
+                has_due_in_window = any(
+                    parse_due(item.text, today=today) is not None for item in self.recent
+                )
+                if matching and has_due_in_window:
                     line = matching[-1]
                     if self.on_activity is not None:
                         self.on_activity(

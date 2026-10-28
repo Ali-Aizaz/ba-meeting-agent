@@ -8,7 +8,12 @@ from dataclasses import dataclass
 from rapidfuzz import fuzz
 
 from ba_agent.models import TriggerEvent
-from ba_agent.trigger.match import match_wake
+from ba_agent.trigger.match import (
+    _POST_WAKE_COMMENTARY_PREFIXES,
+    _starts_with_any,
+    _truncate_question_len,
+    match_wake,
+)
 
 _IMMEDIATE_ONE_WORD = {
     "leave",
@@ -109,7 +114,23 @@ class TriggerDetector:
             self.followup = None
         if self.followup and speaker == self.followup.speaker and t <= self.followup.until:
             self.followup = None
-            question = text.strip()
+            explicit_match = match_wake(
+                text,
+                fuzzy=self.fuzzy,
+                threshold=self.fuzzy_threshold,
+                extra_phrases=self.extra_phrases,
+            )
+            if explicit_match is not None and len(explicit_match.question.split()) >= 2:
+                if not self._duplicate(speaker, explicit_match.question, t):
+                    events.append(
+                        self._emit(
+                            explicit_match.question, speaker, source, t, caption_id, followup=False
+                        )
+                    )
+                return events
+            raw_tokens = text.strip().split()
+            kept = _truncate_question_len(raw_tokens)
+            question = " ".join(raw_tokens[:kept]).strip(" .,!?;:")
             if not self._duplicate(speaker, question, t):
                 events.append(self._emit(question, speaker, source, t, caption_id, followup=True))
             return events
@@ -145,7 +166,16 @@ class TriggerDetector:
         if match is not None and len(match.question.split()) >= 2:
             question = match.question
         else:
-            question = f"{pending.fragment} {text}".strip()
+            raw_tokens = text.strip().split()
+            norms = [tok.lower().strip(".,!?;:\"'") for tok in raw_tokens]
+            if not pending.fragment.strip() and _starts_with_any(
+                norms, _POST_WAKE_COMMENTARY_PREFIXES
+            ):
+                question = ""
+            else:
+                kept = _truncate_question_len(raw_tokens)
+                merged_tail = " ".join(raw_tokens[:kept]).strip(" .,!?;:")
+                question = f"{pending.fragment} {merged_tail}".strip()
         if self._duplicate(speaker, question, t):
             return []
         return [self._emit(question, speaker, source, t, caption_id, followup=False)]
@@ -169,11 +199,20 @@ class TriggerDetector:
     def _duplicate(self, speaker: str, question: str, t: float) -> bool:
         if self.last is None or speaker != self.last.speaker:
             return False
-        if t - self.last.t > self.dedup_window_s:
+        dt = t - self.last.t
+        if dt > max(self.dedup_window_s, 12.0):
             return False
-        if not question.strip() or not self.last.question.strip():
+        q_clean = question.strip().lower().rstrip(".?!")
+        last_clean = self.last.question.strip().lower().rstrip(".?!")
+        if not q_clean or not last_clean:
             return False
-        return fuzz.ratio(question.lower(), self.last.question.lower()) >= 90
+        if dt <= self.dedup_window_s and fuzz.ratio(q_clean, last_clean) >= 90:
+            return True
+        if len(last_clean.split()) >= 2 and (
+            q_clean == last_clean or q_clean.startswith(last_clean + " ")
+        ):
+            return True
+        return False
 
     def _emit(self, question, speaker, source, t, caption_id, *, followup: bool) -> TriggerEvent:
         event = TriggerEvent(

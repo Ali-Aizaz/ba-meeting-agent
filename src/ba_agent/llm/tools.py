@@ -38,7 +38,10 @@ def local_tools() -> list[dict]:
         {
             "type": "function",
             "name": "create_task",
-            "description": "Create a Notion task. Requires task, owner, and due date.",
+            "description": (
+                "Create a new Notion task when a participant asks to add or assign an action item. "
+                "Requires task, owner, and due date. Do not call this when asked to list or check existing tasks."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {

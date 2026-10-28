@@ -58,17 +58,45 @@ def might_contain_task(text: str, *, today: date) -> bool:
     return _TASK_CUE.search(cleaned) is not None
 
 
+def _first_task_clause(text: str) -> str:
+    first = re.split(r"[.?!;]+(?:\s+|$)", text.strip(), maxsplit=1)[0].strip()
+    first = re.split(
+        r"\s+(?:and\s+now|so\s+now|okay\s+now|ok\s+now|now\s+it(?:'s|s|\s+is)?|"
+        r"now\s+i(?:'m|m|\s+am|\s+have)?|and\s+it(?:'s|s|\s+is|\s+basically)?|"
+        r"it\s+basically|it(?:'s|s|\s+is)\s+going\s+to|as\s+you\s+can\s+see)\b",
+        first,
+        maxsplit=1,
+        flags=re.I,
+    )[0].strip()
+    return first.rstrip(" .,!?;:")
+
+
+def _trim_due_text(due_text: str, *, today: date) -> str:
+    cleaned = _first_task_clause(due_text)
+    target = parse_due(cleaned, today=today)
+    if target is None:
+        return cleaned
+    words = cleaned.split()
+    for end in range(1, len(words) + 1):
+        prefix = " ".join(words[:end]).strip(" .,!?;:")
+        if parse_due(prefix, today=today) == target:
+            return prefix
+    return cleaned
+
+
 def parse_task_command(question: str, *, said_by: str, time: str, today: date) -> TaskRecord | None:
-    match = _TASK_COMMAND.match(question.strip().rstrip("."))
+    clause = _first_task_clause(question)
+    match = _TASK_COMMAND.match(clause)
     if match is None:
         return None
     owner = (match.group("owner") or "").strip(" .")
-    body = match.group("body").strip().rstrip(".")
+    body = _first_task_clause(match.group("body"))
     due_text = ""
     due_match = re.search(r"\s+(?:by|on|before|due)\s+(.+)$", body, re.I)
     if due_match:
-        due_text = due_match.group(1).strip()
-        body = body[: due_match.start()].strip()
+        due_raw = due_match.group(1).strip()
+        due_text = _trim_due_text(due_raw, today=today)
+        body = body[: due_match.start()].strip(" .,!?;:")
     due = parse_due(due_text, today=today) if due_text else None
     return TaskRecord(
         task=body,
@@ -82,24 +110,30 @@ def parse_task_command(question: str, *, said_by: str, time: str, today: date) -
 
 
 def apply_followup(record: TaskRecord, text: str, *, today: date) -> TaskRecord:
-    due = parse_due(text, today=today)
+    clause = _first_task_clause(text)
+    due = parse_due(clause, today=today)
     owner = record.owner
     if not owner:
-        candidate = re.sub(r"^(?:for|owner(?:\s+is)?)\s+", "", text.strip(), flags=re.I)
+        has_explicit_prefix = (
+            re.match(r"^(?:for|owner(?:\s+is)?)\s+", clause, flags=re.I) is not None
+        )
+        candidate = re.sub(r"^(?:for|owner(?:\s+is)?)\s+", "", clause, flags=re.I)
         candidate = re.split(r"\s+(?:by|on|before|due)\s+|[,;]", candidate, maxsplit=1)[0].strip()
-        tokens = [
-            tok
-            for tok in candidate.split()
-            if parse_due(tok, today=today) is None
-            and tok.lower() not in {"next", "by", "on", "for", "and", "the"}
-        ]
-        if tokens:
-            owner_str = " ".join(tokens[:2]).strip(" .")
-            if owner_str and not parse_due(owner_str, today=today):
-                owner = owner_str
+        if has_explicit_prefix or due is not None or len(candidate.split()) <= 4:
+            tokens = [
+                tok
+                for tok in candidate.split()
+                if parse_due(tok, today=today) is None
+                and tok.lower()
+                not in {"next", "by", "on", "for", "and", "the", "now", "it", "it's", "i", "we"}
+            ]
+            if tokens:
+                owner_str = " ".join(tokens[:2]).strip(" .")
+                if owner_str and not parse_due(owner_str, today=today):
+                    owner = owner_str
     due_text = record.due_text
     if due is not None:
-        due_text = text.strip()
+        due_text = _trim_due_text(clause, today=today)
     task = record.task
     return TaskRecord(
         task=task,
@@ -188,7 +222,7 @@ def fallback_overheard_tasks(
     today: date,
 ) -> list[TaskRecord]:
     """Rule-based fallback when the LLM call is unavailable."""
-    cleaned = line_text.strip().rstrip(".!?")
+    cleaned = _first_task_clause(line_text)
     if not cleaned or is_addressed_line(cleaned):
         return []
     cmd = parse_task_command(cleaned, said_by=said_by, time=time, today=today)
@@ -200,13 +234,13 @@ def fallback_overheard_tasks(
             continue
         groups = match.groupdict()
         owner = (groups.get("owner") or said_by or "").strip(" .,")
-        body = (groups.get("body") or "").strip(" .")
+        body = _first_task_clause(groups.get("body") or "")
         due_match = re.search(r"\s+(?:by|on|before|due)\s+(.+)$", body, re.I)
         if due_match:
-            due_text = due_match.group(1).strip()
+            due_text = _trim_due_text(due_match.group(1).strip(), today=today)
             body = body[: due_match.start()].strip()
         else:
-            due_text = body
+            due_text = _trim_due_text(body, today=today)
         due = parse_due(due_text, today=today)
         if due is None or not body or not owner or owner.lower() == "unknown speaker":
             continue

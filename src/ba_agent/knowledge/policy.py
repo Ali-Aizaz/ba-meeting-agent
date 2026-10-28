@@ -231,34 +231,42 @@ _WEB_INTENT = re.compile(
 
 _MEETING_PATTERNS = (
     re.compile(r"\bwhat\s+did\s+we\b", re.I),
-    re.compile(r"\bdid\s+we\s+(?:decide|agree|say|discuss|pick|choose|talk)\b", re.I),
+    re.compile(r"\bdid\s+we\s+(?:decide|agree|say|discuss|pick|choose|talk|assign|create|have)\b", re.I),
     re.compile(
-        r"\b(?:our|the|all|any|open|pending|current|stored|saved|existing)\s+"
+        r"\b(?:our|the|all|any|open|pending|current|stored|saved|existing|previous|past|last|earlier)\s+"
         r"(?:decision|decisions|task|tasks|action\s+items?|meeting|meetings|summary|summaries|notes)\b",
         re.I,
     ),
     re.compile(
-        r"\b(?:what|which|show|list|get|find|check|tell\s+me|give\s+me|are\s+there)\b.*"
-        r"\b(?:tasks?|action\s+items?|meeting\s+notes?|summaries|to-?dos?)\b",
+        r"\b(?:what|which|show|list|get|find|check|tell\s+me|give\s+me|are\s+there|do\s+we\s+have|does\s+\w+\s+have)\b.*"
+        r"\b(?:tasks?|action\s+items?|meeting\s+notes?|meetings?|summaries|to-?dos?|decisions?)\b",
         re.I,
     ),
     re.compile(
-        r"\btasks?\s+(?:for|assigned\s+to|owned\s+by|in\s+notion|in\s+the\s+database|from|do\s+we\s+have)\b",
+        r"\b(?:tasks?|action\s+items?|to-?dos?)\s+"
+        r"(?:for|assigned\s+to|owned\s+by|in\s+notion|in\s+the\s+database|in\s+the\s+tasks?\s+db|from|do\s+we\s+have|are\s+there|we\s+have|have\s+been)\b",
         re.I,
     ),
-    re.compile(r"\b[a-z]+'s\s+(?:tasks?|action\s+items?)\b", re.I),
+    re.compile(r"\b(?:tasks?\s+db|tasks?\s+database|notion\s+tasks?|notion\s+notes?)\b", re.I),
+    re.compile(r"\b[a-z]+'s\s+(?:tasks?|action\s+items?|to-?dos?|assignments?)\b", re.I),
     re.compile(
-        r"\bwho\s+(?:said|owns|is\s+in\s+the\s+meeting|is\s+assigned|is\s+working\s+on|is\s+responsible)\b",
+        r"\bwho\s+(?:said|owns|is\s+in\s+the\s+meeting|is\s+assigned|is\s+working\s+on|is\s+responsible|is\s+handling|is\s+doing|has\s+the\s+task)\b",
         re.I,
     ),
-    re.compile(r"\bwhat\s+did\s+[a-z]+\s+(?:say|mention|ask|propose|agree)\b", re.I),
     re.compile(
-        r"\b(?:in|from|during)\s+(?:this|the\s+last|the\s+previous|our\s+last|earlier|past)\s+meetings?\b",
+        r"\bwhat\s+(?:is|are)\s+[a-z]+\s+(?:working\s+on|assigned\s+to|doing|responsible\s+for)\b",
         re.I,
     ),
-    re.compile(r"\b(?:in|from)\s+(?:notion|the\s+database)\b", re.I),
+    re.compile(r"\bwhat\s+did\s+[a-z]+\s+(?:say|mention|ask|propose|agree|do|finish|complete)\b", re.I),
+    re.compile(r"\bdid\s+[a-z]+\s+(?:finish|complete|send|prepare|review|update|schedule|request|validate|finalize|benchmark)\b", re.I),
+    re.compile(
+        r"\b(?:in|from|during|about|check)\s+(?:this|the\s+last|the\s+previous|our\s+last|our\s+previous|earlier|past|previous|last)\s+meetings?\b",
+        re.I,
+    ),
+    re.compile(r"\b(?:previous|past|last|earlier)\s+meetings?(?:'s)?\b", re.I),
+    re.compile(r"\b(?:in|from)\s+(?:notion|the\s+database|the\s+db)\b", re.I),
     re.compile(r"\b(?:summarize|summarise|recap)\b", re.I),
-    re.compile(r"\b(?:add|create|assign|log|track)\b.*\btask\b", re.I),
+    re.compile(r"\b(?:add|create|assign|log|track)\b.*\btasks?\b", re.I),
     re.compile(r"\bassign\s+[a-z]+\s+to\b", re.I),
     re.compile(
         r"\b(?:please\s+)?(?:finish|complete|send|prepare|review|update|draft|write|book|schedule|fix|check)\b.+\bby\s+\w+",
