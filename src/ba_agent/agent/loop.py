@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -10,7 +11,7 @@ from datetime import date
 from ba_agent.agent.timing import log_timing
 from ba_agent.captions.clock import format_meeting_time
 from ba_agent.config import read_prompt
-from ba_agent.guardrails.citations import NOT_SURE, finalize_reply, reply_status
+from ba_agent.guardrails.citations import NOT_SURE, finalize_reply, has_citation, reply_status
 from ba_agent.knowledge.policy import is_car_question, should_search_web
 from ba_agent.knowledge.search import Chunk, KnowledgeIndex
 from ba_agent.llm.tools import local_tools
@@ -50,6 +51,7 @@ class AgentLoop:
         timeout_s: float,
         persona: str | None = None,
         on_activity: Callable[[str, str], None] | None = None,
+        fetch_db_context: Callable[[], Awaitable[str]] | None = None,
     ) -> None:
         self.knowledge = knowledge
         self.search_cars = search_cars
@@ -65,7 +67,24 @@ class AgentLoop:
         self.timeout_s = timeout_s
         self.persona = persona if persona is not None else read_prompt("persona.md")
         self.on_activity = on_activity
+        self.fetch_db_context = fetch_db_context
         self.pending_task = None
+
+    async def _full_digest(self) -> str:
+        base = (self.digest() or "").strip()
+        if self.fetch_db_context is None:
+            return base
+        try:
+            res = self.fetch_db_context()
+            if inspect.isawaitable(res):
+                res = await res
+            extra = (res or "").strip()
+        except Exception:
+            logger.warning("fetch_db_context failed", exc_info=True)
+            extra = ""
+        if not extra:
+            return base
+        return f"{base}\n{extra}".strip() if base else extra
 
     def _emit_activity(self, text: str, kind: str = "working") -> None:
         if self.on_activity is not None:
@@ -192,8 +211,9 @@ class AgentLoop:
         hits = self.knowledge.search(question)
         web: WebResult | None = None
         car = is_car_question(question, hits)
+        web_needed = car and should_search_web(question, hits, self.min_score)
         tool_at = time.perf_counter()
-        if car and should_search_web(question, hits, self.min_score):
+        if web_needed:
             self._emit_activity(f'Searching web for "{question[:60]}"…', "working")
             try:
                 web = await self.search_cars(question)
@@ -205,9 +225,12 @@ class AgentLoop:
             tool_at = time.perf_counter()
         if car and not hits and not (web and web.useful):
             return NOT_SURE, PostReason.REPLY, started, tool_at
+        if not car and self.fetch_db_context is not None:
+            self._emit_activity("Fetching stored data from database…", "working")
+        full_digest = await self._full_digest()
         model_at = time.perf_counter()
         self._emit_activity(f"Thinking — generating reply for {event.speaker}…", "working")
-        prompt = _prompt(self.persona, self.digest(), question, hits, web, car)
+        prompt = _prompt(self.persona, full_digest, question, hits, web, car)
         try:
             first = await self.llm.respond(
                 prompt,
@@ -216,24 +239,24 @@ class AgentLoop:
                 timeout_s=self.timeout_s,
             )
             if first.function_calls:
-                before_hits = len(hits)
-                tool_outcome = await self._handle_tool_calls(
-                    first.function_calls, event, hits, model_at
+                tool_outcome, web = await self._handle_tool_calls(
+                    first.function_calls, event, hits, web, model_at
                 )
                 if tool_outcome is not None:
                     return tool_outcome
-                prompt = _prompt(self.persona, self.digest(), question, hits, web, car)
-                if not first.text or len(hits) > before_hits:
-                    self._emit_activity(
-                        f"Synthesizing answer with knowledge results for {event.speaker}…",
-                        "working",
-                    )
-                    first = await self.llm.respond(
-                        prompt,
-                        tools=None,
-                        enable_web_search=False,
-                        timeout_s=self.timeout_s,
-                    )
+                car = is_car_question(question, hits) or (web is not None and web.useful)
+                full_digest = await self._full_digest()
+                prompt = _prompt(self.persona, full_digest, question, hits, web, car)
+                self._emit_activity(
+                    f"Synthesizing answer with knowledge results for {event.speaker}…",
+                    "working",
+                )
+                first = await self.llm.respond(
+                    prompt,
+                    tools=None,
+                    enable_web_search=False,
+                    timeout_s=self.timeout_s,
+                )
             if not car:
                 text = first.text or "I don't have that in this meeting."
                 return text, PostReason.REPLY, model_at, tool_at
@@ -253,7 +276,17 @@ class AgentLoop:
         except Exception:
             logger.warning("llm.respond failed; using deterministic fallback", exc_info=True)
             self._emit_activity(f"Preparing fallback answer for {event.speaker}…", "working")
-            return await self._fallback_answer(question, event, hits, web, car, model_at, tool_at)
+            return await self._fallback_answer(
+                question,
+                event,
+                hits,
+                web,
+                car,
+                model_at,
+                tool_at,
+                full_digest=full_digest,
+                prefer_web=web_needed,
+            )
 
     async def _fallback_answer(
         self,
@@ -264,6 +297,9 @@ class AgentLoop:
         car: bool,
         model_at: float,
         tool_at: float,
+        *,
+        full_digest: str | None = None,
+        prefer_web: bool = False,
     ):
         task_records = fallback_overheard_tasks(
             question,
@@ -275,6 +311,8 @@ class AgentLoop:
             result = await self.create_task(task_records[0])
             return result.message, PostReason.CONFIRMATION, model_at, time.perf_counter()
         if car:
+            if prefer_web and web and web.useful and web.text:
+                return _format_web_fallback(web), PostReason.REPLY, model_at, tool_at
             if hits:
                 top = hits[0]
                 lines = [
@@ -285,55 +323,39 @@ class AgentLoop:
                 summary = " ".join(lines[:2]).strip() or top.text.strip()
                 return f"{summary} (src: {top.file})", PostReason.REPLY, model_at, tool_at
             if web and web.useful and web.text:
-                url_cite = f" ({web.urls[0]})" if web.urls else ""
-                return f"{web.text.strip()}{url_cite}", PostReason.REPLY, model_at, tool_at
+                return _format_web_fallback(web), PostReason.REPLY, model_at, tool_at
             return NOT_SURE, PostReason.REPLY, model_at, tool_at
         norm_q = question.lower().strip(" .,!?;:")
         if norm_q in {"hello", "hi", "hey", "status", "help", "are you there", "can you hear me"}:
             return (
-                "Hi! I'm here and listening. Ask me a question, assign a task, or say 'Hey BA, save the meeting'.",
+                "Hi! I'm here and listening. Ask me a question, assign a task, "
+                "or say 'Hey BA, save the meeting'.",
                 PostReason.REPLY,
                 model_at,
                 tool_at,
             )
-        digest = (self.digest() or "").strip()
-        if not digest:
-            return "I don't have that in this meeting yet.", PostReason.REPLY, model_at, tool_at
-        digest_lines = [
-            ln.strip()
-            for ln in digest.splitlines()
-            if ln.strip() and not ln.strip().lower().startswith("participants:")
-        ]
-        if not digest_lines:
-            return "I don't have any transcript lines in this meeting yet.", PostReason.REPLY, model_at, tool_at
-        stop = {
-            "what", "who", "when", "where", "why", "how", "did", "does", "was",
-            "were", "are", "the", "this", "that", "about", "meeting", "say",
-            "said", "talk", "talked", "discuss", "discussed", "summarize", "summary",
-            "recap", "notes", "can", "you", "please", "give", "tell",
-        }
-        q_words = {
-            w.lower().strip(".,!?;:")
-            for w in question.split()
-            if len(w.strip(".,!?;:")) >= 3 and w.lower().strip(".,!?;:") not in stop
-        }
-        matched = (
-            [ln for ln in digest_lines if any(w in ln.lower() for w in q_words)]
-            if q_words
-            else []
+        digest_text = (full_digest if full_digest is not None else (self.digest() or "")).strip()
+        return (
+            _answer_from_digest(question, digest_text),
+            PostReason.REPLY,
+            model_at,
+            tool_at,
         )
-        selected = (matched or digest_lines)[-4:]
-        return "From the meeting so far: " + " | ".join(selected), PostReason.REPLY, model_at, tool_at
 
     async def _handle_tool_calls(
-        self, calls, event: TriggerEvent, hits: list[Chunk], model_at: float
+        self,
+        calls,
+        event: TriggerEvent,
+        hits: list[Chunk],
+        web: WebResult | None,
+        model_at: float,
     ):
         seen_sources = {hit.source for hit in hits}
         for call in calls:
             if call.name == "save_meeting":
                 self._emit_activity("Saving meeting notes to Notion…", "working")
                 url = await self._save()
-                return _saved(url), PostReason.MEETING_SAVED, model_at, time.perf_counter()
+                return (_saved(url), PostReason.MEETING_SAVED, model_at, time.perf_counter()), web
             if call.name == "create_task":
                 args = call.arguments or {}
                 task_text = str(args.get("task") or "").strip()
@@ -352,13 +374,18 @@ class AgentLoop:
                 if not task_text or not owner or due is None:
                     self.pending_task = record if task_text else None
                     self.trigger.arm_followup(event.speaker, event.t_detected)
-                    return _ask(self.pending_task), PostReason.REPLY, model_at, time.perf_counter()
+                    return (
+                        _ask(self.pending_task),
+                        PostReason.REPLY,
+                        model_at,
+                        time.perf_counter(),
+                    ), web
                 self._emit_activity(
                     f"Creating task in Notion: {task_text} ({owner})…",
                     "working",
                 )
                 result = await self.create_task(record)
-                return result.message, PostReason.CONFIRMATION, model_at, time.perf_counter()
+                return (result.message, PostReason.CONFIRMATION, model_at, time.perf_counter()), web
             if call.name == "search_knowledge":
                 query = str((call.arguments or {}).get("query") or "").strip()
                 if query:
@@ -367,7 +394,17 @@ class AgentLoop:
                         if extra.source not in seen_sources:
                             seen_sources.add(extra.source)
                             hits.append(extra)
-        return None
+            if call.name == "search_cars":
+                query = str((call.arguments or {}).get("query") or "").strip()
+                if query and (web is None or not web.useful):
+                    self._emit_activity(f'Searching web for "{query[:50]}"…', "working")
+                    try:
+                        web = await self.search_cars(query)
+                    except AssertionError:
+                        raise
+                    except Exception:
+                        logger.warning("tool search_cars failed", exc_info=True)
+        return None, web
 
     async def _save(self) -> str:
         try:
@@ -396,7 +433,10 @@ def _prompt(persona, digest, question, hits: list[Chunk], web: WebResult | None,
         "Cite a knowledge file as (src: filename.md) or include a URL. "
         "If those sections are empty, say you are not sure."
         if car
-        else "This is a question about the meeting. Use the digest. Do not search the web."
+        else (
+            "This is a question about the meeting or stored database records. "
+            "Use the meeting_digest and knowledge sections. Do not search the web."
+        )
     )
     return (
         f"{persona.strip()}\n\n{car_rule}\n"
@@ -408,6 +448,219 @@ def _prompt(persona, digest, question, hits: list[Chunk], web: WebResult | None,
         f"<question>{question}</question>\n\n"
         "Reply in a few plain-text sentences."
     )
+
+
+def _format_web_fallback(web: WebResult) -> str:
+    text = web.text.strip()
+    if web.urls and not has_citation(text):
+        return f"{text} ({web.urls[0]})"
+    return text
+
+
+_DIGEST_STOP = {
+    "what",
+    "who",
+    "when",
+    "where",
+    "why",
+    "how",
+    "did",
+    "does",
+    "was",
+    "were",
+    "are",
+    "is",
+    "the",
+    "for",
+    "about",
+    "from",
+    "with",
+    "our",
+    "have",
+    "has",
+    "had",
+    "any",
+    "all",
+    "can",
+    "you",
+    "tell",
+    "show",
+    "list",
+    "give",
+    "say",
+    "said",
+    "talk",
+    "talked",
+    "discussed",
+    "discuss",
+    "meeting",
+    "meetings",
+    "task",
+    "tasks",
+    "action",
+    "item",
+    "items",
+    "todo",
+    "todos",
+    "stored",
+    "database",
+    "notion",
+    "current",
+    "past",
+    "previous",
+    "last",
+    "recent",
+}
+
+
+def _answer_from_digest(question: str, digest: str) -> str:
+    if not digest.strip():
+        return "The meeting just started — nothing has been recorded yet."
+
+    section = "transcript"
+    task_lines: list[str] = []
+    note_lines: list[str] = []
+    transcript_lines: list[str] = []
+    participants_line = ""
+
+    for raw in digest.splitlines():
+        line = raw.strip()
+        if not line or line.lower() == "none":
+            continue
+        low = line.lower()
+        if low.startswith("participants:"):
+            participants_line = line
+            continue
+        if low in {"tasks:", "stored notion tasks:", "stored local tasks:"}:
+            section = "tasks"
+            continue
+        if low == "stored notion meeting notes:":
+            section = "notes"
+            continue
+        if low in {"recent:", "previous local meeting captions:"}:
+            section = "transcript"
+            continue
+        if low == "bot replies:":
+            section = "ignore"
+            continue
+
+        cleaned = line.lstrip("- ").strip()
+        if not cleaned or cleaned.lower() == "none":
+            continue
+        if section == "tasks":
+            if cleaned not in task_lines:
+                task_lines.append(cleaned)
+        elif section == "notes":
+            if cleaned not in note_lines:
+                note_lines.append(cleaned)
+        elif section == "transcript":
+            transcript_lines.append(cleaned)
+
+    q_lower = question.lower()
+    raw_words = [
+        w.strip(".,!?;:\"'()[]")
+        for w in q_lower.split()
+        if len(w.strip(".,!?;:\"'()[]")) > 2
+    ]
+    keywords = [w for w in raw_words if w not in _DIGEST_STOP]
+
+    is_task_query = any(
+        term in q_lower
+        for term in (
+            "task",
+            "tasks",
+            "action item",
+            "action items",
+            "todo",
+            "to-do",
+            "to do",
+            "assigned",
+            "assignment",
+            "due",
+            "deadline",
+            "working on",
+            "owner",
+        )
+    )
+    is_notes_query = any(
+        term in q_lower
+        for term in (
+            "summary",
+            "summaries",
+            "meeting note",
+            "meeting notes",
+            "past meeting",
+            "past meetings",
+            "previous meeting",
+            "previous meetings",
+            "last meeting",
+            "kickoff",
+            "chassis",
+            "benchmark",
+        )
+    )
+
+    if is_task_query:
+        if not task_lines:
+            return "There are no tasks recorded yet."
+        matched_tasks = _rank_lines(task_lines, keywords, q_lower)
+        chosen = matched_tasks[:5] if matched_tasks else task_lines[:5]
+        return f"Recorded tasks: {' | '.join(chosen)}"
+
+    if is_notes_query and note_lines:
+        matched_notes = _rank_lines(note_lines, keywords, q_lower)
+        chosen = matched_notes[:3] if matched_notes else note_lines[:3]
+        return f"Stored meeting notes: {' | '.join(chosen)}"
+
+    all_candidates = transcript_lines + note_lines + task_lines
+    if keywords and all_candidates:
+        matched = _rank_lines(all_candidates, keywords, q_lower)
+        if matched:
+            return f"From the meeting records: {' | '.join(matched[:3])}"
+
+    if "participant" in q_lower or "who is in" in q_lower or "attendee" in q_lower:
+        if participants_line and not participants_line.lower().endswith("none"):
+            return participants_line
+
+    if transcript_lines:
+        return f"From the meeting so far: {' | '.join(transcript_lines[-3:])}"
+    if task_lines:
+        return f"Recorded tasks: {' | '.join(task_lines[:4])}"
+    if note_lines:
+        return f"Stored meeting notes: {' | '.join(note_lines[:2])}"
+    return "The meeting just started — nothing has been recorded yet."
+
+
+def _rank_lines(lines: list[str], keywords: list[str], q_lower: str) -> list[str]:
+    scored: list[tuple[int, int, str]] = []
+    want_open = any(w in q_lower for w in ("open", "pending", "todo", "to-do", "incomplete"))
+    want_done = any(w in q_lower for w in ("done", "completed", "finished", "closed"))
+    status_words = {
+        "open",
+        "pending",
+        "todo",
+        "incomplete",
+        "done",
+        "completed",
+        "finished",
+        "closed",
+        "status",
+    }
+    filter_keywords = [k for k in keywords if k not in status_words]
+    for idx, line in enumerate(lines):
+        low = line.lower()
+        score = 0
+        for kw in filter_keywords:
+            if kw in low:
+                score += 2
+        if want_open and ("[todo]" in low or "[in progress]" in low):
+            score += 1
+        elif want_done and "[done]" in low:
+            score += 1
+        if score > 0:
+            scored.append((score, idx, line))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [item[2] for item in scored]
 
 
 def _is_save(question: str) -> bool:

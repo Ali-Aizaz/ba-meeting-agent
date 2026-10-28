@@ -6,7 +6,7 @@ from collections.abc import Callable
 
 from pydantic import BaseModel, ValidationError
 
-LOCAL_TOOL_NAMES = ("search_knowledge", "create_task", "save_meeting")
+LOCAL_TOOL_NAMES = ("search_knowledge", "search_cars", "create_task", "save_meeting")
 
 
 def local_tools() -> list[dict]:
@@ -15,6 +15,19 @@ def local_tools() -> list[dict]:
             "type": "function",
             "name": "search_knowledge",
             "description": "Search the local car notes. Returns file and heading citations.",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "type": "function",
+            "name": "search_cars",
+            "description": (
+                "Search the public web for car specs, prices, comparisons, or current facts."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {"query": {"type": "string"}},

@@ -90,3 +90,11 @@ def test_t13_prompt_uses_xml_delimiters_for_untrusted_context() -> None:
     assert "<web_results>" in rendered
     assert "<question>what is a hybrid?</question>" in rendered
     assert "untrusted data" in rendered
+
+
+def test_t13_generic_speaker_labels_do_not_block_car_search() -> None:
+    participants = ["Unknown speaker", "You", "Sara"]
+    q = "can you check the speaker system in a 2025 Toyota Camry?"
+    assert query_allowed(q, [], participants) is True
+    assert query_allowed("what car does Sara drive?", [], participants) is False
+

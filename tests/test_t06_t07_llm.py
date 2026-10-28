@@ -147,3 +147,40 @@ def test_knowledge_files_have_no_wake_table() -> None:
     for path in root.glob("*.md"):
         text = path.read_text(encoding="utf-8").lower()
         assert "hey ba" not in text
+
+
+def test_t07_natural_language_knowledge_queries_and_policy() -> None:
+    from ba_agent.knowledge.policy import (
+        is_car_question,
+        is_meeting_question,
+        needs_current_fact,
+        should_search_web,
+    )
+
+    index = _index()
+    regen_hits = index.search("how does regenerative braking work in a hybrid car?")
+    assert regen_hits
+    assert regen_hits[0].file in {"safety.md", "hybrid.md"}
+
+    lfp_hits = index.search("what is the difference between LFP and NMC battery chemistry?")
+    assert lfp_hits
+    assert lfp_hits[0].file == "ev.md"
+
+    # Database, task, and past-meeting questions are classified as meeting questions.
+    for q in [
+        "what tasks are in Notion?",
+        "what are Ali's tasks?",
+        "what did we discuss in the powertrain-kickoff meeting?",
+        "who is working on the brake pad supplier shortlist?",
+        "Ali, please finish the cost sheet by Friday",
+    ]:
+        assert is_meeting_question(q), q
+        assert not is_car_question(q, []), q
+
+    # Specific car models, prices, and comparisons trigger web search even with local hits.
+    price_q = "what is the current price of a Toyota RAV4 hybrid?"
+    price_hits = index.search(price_q)
+    assert is_car_question(price_q, price_hits)
+    assert needs_current_fact(price_q)
+    assert should_search_web(price_q, price_hits, min_score=0.5)
+

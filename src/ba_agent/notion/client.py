@@ -70,7 +70,11 @@ class NotionService:
         self.summary_page_id = summary_page_id
         self.summary_url = summary_url
         self._task_cache: dict[str, str] = {}
+        self._task_records: dict[str, TaskRecord] = {}
         self._tasks_loaded: bool = False
+        self._tasks_loaded_at: float = 0.0
+        self._summaries_cache: list[dict] = []
+        self._summaries_loaded_at: float = 0.0
         self._transcript_appended: bool = False
         self.task_parent: dict = {"database_id": schema.tasks_db} if schema.tasks_db else {}
         self.summary_parent: dict = {"database_id": schema.summary_db} if schema.summary_db else {}
@@ -83,7 +87,7 @@ class NotionService:
                 "Content-Type": "application/json",
             },
             transport=transport,
-            timeout=30,
+            timeout=httpx.Timeout(25.0, connect=8.0),
         )
 
     @property
@@ -182,12 +186,91 @@ class NotionService:
         page_id = created.get("id")
         if page_id:
             self._task_cache[key] = page_id
+        stored_record = TaskRecord(
+            task=record.task,
+            owner=record.owner,
+            due=record.due,
+            due_text=record.due_text,
+            status=record.status or self.schema.status_default,
+            said_by=record.said_by,
+            time=record.time,
+            notion_page_id=page_id,
+            key=key,
+        )
+        self._task_records[key] = stored_record
         return TaskWrite(
             True,
             task_added(record.owner, record.task, record.due_text, record.due),
             page_id=page_id,
             key=key,
         )
+
+    def _parse_task_page(self, page: dict) -> tuple[str, str | None, TaskRecord | None]:
+        props = page.get("properties") or {}
+        t_props = self.schema.task_props
+        title_name = t_props["task"].name if "task" in t_props else "Task"
+        owner_name = t_props["owner"].name if "owner" in t_props else "Owner"
+        due_name = t_props["due"].name if "due" in t_props else "Due"
+        status_name = t_props["status"].name if "status" in t_props else "Status"
+        said_by_name = t_props["said_by"].name if "said_by" in t_props else "Said by"
+        time_name = t_props["time"].name if "time" in t_props else "Time"
+
+        task = plain_property(props.get(title_name) or {}).strip()
+        owner = plain_property(props.get(owner_name) or {}).strip()
+        due_raw = plain_property(props.get(due_name) or {}).strip()
+        status = (
+            plain_property(props.get(status_name) or {}).strip()
+            or self.schema.status_default
+        )
+        said_by = plain_property(props.get(said_by_name) or {}).strip()
+        time_val = plain_property(props.get(time_name) or {}).strip()
+        page_id = page.get("id")
+        row_key = dedup_key(task, owner) if task and owner else ""
+        if not task:
+            return row_key, page_id, None
+        due_date: date | None = None
+        if due_raw:
+            try:
+                due_date = date.fromisoformat(due_raw[:10])
+            except ValueError:
+                due_date = None
+        rec = TaskRecord(
+            task=task,
+            owner=owner,
+            due=due_date,
+            due_text=due_raw,
+            status=status,
+            said_by=said_by,
+            time=time_val,
+            notion_page_id=page_id,
+            key=row_key,
+        )
+        return row_key, page_id, rec
+
+    def _parse_summary_page(self, page: dict) -> dict | None:
+        props = page.get("properties") or {}
+        s_props = self.schema.summary_props
+        title_name = s_props["title"].name if "title" in s_props else "Title"
+        date_name = s_props["date"].name if "date" in s_props else "Date"
+        summary_name = s_props["summary"].name if "summary" in s_props else "Summary"
+        transcript_name = s_props["transcript"].name if "transcript" in s_props else "Transcript"
+
+        title = plain_property(props.get(title_name) or {}).strip()
+        day_raw = plain_property(props.get(date_name) or {}).strip()
+        summary = plain_property(props.get(summary_name) or {}).strip()
+        transcript = plain_property(props.get(transcript_name) or {}).strip()
+        page_id = str(page.get("id") or "")
+        url = str(page.get("url") or "")
+        if not title and not summary and not transcript:
+            return None
+        return {
+            "id": page_id,
+            "url": url,
+            "title": title,
+            "date": day_raw,
+            "summary": summary,
+            "transcript": transcript,
+        }
 
     async def find_task(self, key: str, *, refresh: bool = False) -> str | None:
         if not self.schema.tasks_db:
@@ -197,29 +280,136 @@ class NotionService:
         if not refresh and self._tasks_loaded:
             return None
         cursor = None
-        title_name = self.schema.task_props["task"].name
-        owner_name = self.schema.task_props["owner"].name
         while True:
             body: dict = {"page_size": 100}
             if cursor:
                 body["start_cursor"] = cursor
             data = await self._request("POST", f"/databases/{self.schema.tasks_db}/query", body)
             for page in data.get("results") or []:
-                props = page.get("properties") or {}
-                task = plain_property(props.get(title_name) or {})
-                owner = plain_property(props.get(owner_name) or {})
-                row_key = dedup_key(task, owner)
-                page_id = page.get("id")
+                row_key, page_id, rec = self._parse_task_page(page)
                 if row_key and page_id:
                     self._task_cache[row_key] = page_id
+                if row_key and rec is not None:
+                    self._task_records[row_key] = rec
                 if row_key == key:
                     if not data.get("has_more"):
                         self._tasks_loaded = True
+                        self._tasks_loaded_at = time.monotonic()
                     return page_id
             if not data.get("has_more"):
                 self._tasks_loaded = True
+                self._tasks_loaded_at = time.monotonic()
                 return self._task_cache.get(key)
             cursor = data.get("next_cursor")
+
+    async def list_tasks(self, *, refresh: bool = False) -> list[TaskRecord]:
+        if not self.schema.tasks_db:
+            return []
+        now = time.monotonic()
+        if (
+            not refresh
+            and self._tasks_loaded
+            and (self._tasks_loaded_at == 0.0 or now - self._tasks_loaded_at < 30.0)
+        ):
+            return list(self._task_records.values())
+        cursor = None
+        records: dict[str, TaskRecord] = {}
+        try:
+            while True:
+                body: dict = {"page_size": 100}
+                if cursor:
+                    body["start_cursor"] = cursor
+                data = await self._request("POST", f"/databases/{self.schema.tasks_db}/query", body)
+                for page in data.get("results") or []:
+                    row_key, page_id, rec = self._parse_task_page(page)
+                    if row_key and page_id:
+                        self._task_cache[row_key] = page_id
+                    if rec is not None:
+                        k = row_key or (page_id or rec.task)
+                        records[k] = rec
+                        if row_key:
+                            self._task_records[row_key] = rec
+                if not data.get("has_more"):
+                    break
+                cursor = data.get("next_cursor")
+            self._tasks_loaded = True
+            self._tasks_loaded_at = time.monotonic()
+        except Exception:
+            logger.warning("notion list_tasks failed; returning cached tasks", exc_info=True)
+            return list(self._task_records.values())
+        return list(records.values())
+
+    async def list_summaries(self, *, refresh: bool = False, limit: int = 10) -> list[dict]:
+        if not self.schema.summary_db:
+            return []
+        now = time.monotonic()
+        if (
+            not refresh
+            and self._summaries_cache
+            and now - self._summaries_loaded_at < 30.0
+        ):
+            return self._summaries_cache[:limit]
+        summaries: list[dict] = []
+        try:
+            body: dict = {"page_size": min(100, max(limit * 2, 20))}
+            data = await self._request("POST", f"/databases/{self.schema.summary_db}/query", body)
+            for page in data.get("results") or []:
+                parsed = self._parse_summary_page(page)
+                if parsed is None:
+                    continue
+                if (
+                    parsed["id"] == self.summary_page_id
+                    and parsed["summary"] in {"", "Meeting in progress…"}
+                    and parsed["transcript"] in {"", "Waiting for captions…"}
+                ):
+                    continue
+                if not parsed["summary"] and not parsed["transcript"]:
+                    continue
+                summaries.append(parsed)
+                if len(summaries) >= limit:
+                    break
+            self._summaries_cache = summaries
+            self._summaries_loaded_at = time.monotonic()
+        except Exception:
+            logger.warning(
+                "notion list_summaries failed; returning cached summaries",
+                exc_info=True,
+            )
+            return self._summaries_cache[:limit]
+        return summaries[:limit]
+
+    async def database_context(
+        self,
+        *,
+        refresh: bool = False,
+        max_tasks: int = 20,
+        max_summaries: int = 5,
+    ) -> str:
+        sections: list[str] = []
+        tasks = await self.list_tasks(refresh=refresh)
+        if tasks:
+            lines: list[str] = []
+            for t in tasks[:max_tasks]:
+                due_str = t.due.isoformat() if t.due else (t.due_text or "unscheduled")
+                status_str = f" [{t.status}]" if t.status else ""
+                by_str = f" (said by {t.said_by})" if t.said_by else ""
+                lines.append(f"- {t.owner}: {t.task} (due: {due_str}){status_str}{by_str}")
+            sections.append("Stored Notion Tasks:\n" + "\n".join(lines))
+        summaries = await self.list_summaries(refresh=refresh, limit=max_summaries)
+        if summaries:
+            s_lines: list[str] = []
+            for item in summaries:
+                header = f"{item['title']} ({item['date']})" if item["date"] else item["title"]
+                summary_clean = " ".join(item["summary"].split())
+                transcript_clean = " ".join(item["transcript"].split())
+                if len(transcript_clean) > 600:
+                    transcript_clean = transcript_clean[:600] + "…"
+                entry = f"- {header}: {summary_clean}"
+                if transcript_clean and transcript_clean != "Waiting for captions…":
+                    entry += f" | Transcript: {transcript_clean}"
+                s_lines.append(entry)
+            sections.append("Stored Notion Meeting Notes:\n" + "\n".join(s_lines))
+        return "\n".join(sections)
 
     async def save_meeting(
         self,
@@ -246,6 +436,7 @@ class NotionService:
             transcript_note=note or "Transcript is in the toggle.",
         )
         children = _transcript_toggle(transcript)
+        self._summaries_loaded_at = 0.0
         if not self.summary_page_id:
             payload: dict = {"parent": self.summary_parent, "properties": properties}
             if append_children:
@@ -274,9 +465,17 @@ class NotionService:
         return notes_saved(self.summary_url)
 
     async def _request(self, method: str, url: str, body: dict | None = None, dedup_lookup=None):
+        last_exc: Exception | None = None
         for attempt in range(4):
             await self._limiter.wait()
-            response = await self._http.request(method, url, json=body)
+            try:
+                response = await self._http.request(method, url, json=body)
+            except httpx.TransportError as exc:
+                last_exc = exc
+                if attempt < 3:
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                    continue
+                raise
             if response.status_code == 429:
                 if dedup_lookup is not None:
                     existing = await dedup_lookup()
@@ -285,10 +484,15 @@ class NotionService:
                 delay = float(response.headers.get("Retry-After") or 1)
                 await asyncio.sleep(delay)
                 continue
+            if response.status_code in {502, 503, 504} and attempt < 3:
+                await asyncio.sleep(0.5 * (attempt + 1))
+                continue
             response.raise_for_status()
             if not response.content:
                 return {}
             return response.json()
+        if last_exc is not None:
+            raise last_exc
         raise StartupError("Notion rate limit did not clear")
 
 

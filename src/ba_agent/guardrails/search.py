@@ -14,15 +14,45 @@ _TIMESTAMP = re.compile(r"\[\d{1,2}:\d{2}(?::\d{2})?\]")
 _DIGEST_MARKER = re.compile(r"\b(?:meeting digest|participants)\s*:", re.I)
 
 
+_GENERIC_SPEAKER_TOKENS = {
+    "unknown",
+    "speaker",
+    "you",
+    "guest",
+    "host",
+    "user",
+    "participant",
+    "participants",
+    "presentation",
+    "meeting",
+    "techsol",
+    "assistant",
+    "the",
+    "and",
+    "for",
+    "with",
+}
+
+
 def _participant_tokens(participants: list[str]) -> list[str]:
     tokens: list[str] = []
     for raw in participants:
         cleaned = raw.strip()
-        if not cleaned:
+        if not cleaned or cleaned.lower() in {
+            "unknown speaker",
+            "you",
+            "techsol ba",
+            "ba assistant",
+        }:
             continue
         for candidate in (cleaned, *re.findall(r"[A-Za-z]+", cleaned)):
             low = candidate.lower()
-            if len(low) >= 3 and low not in _CAR_WORDS and candidate not in tokens:
+            if (
+                len(low) >= 3
+                and low not in _CAR_WORDS
+                and low not in _GENERIC_SPEAKER_TOKENS
+                and candidate not in tokens
+            ):
                 tokens.append(candidate)
     return sorted(tokens, key=len, reverse=True)
 

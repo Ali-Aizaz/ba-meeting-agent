@@ -149,3 +149,40 @@ def test_t10_open_meeting_resets_per_meeting_meta(tmp_path: Path) -> None:
     assert fresh.get_meta("saved_sig") == ""
     fresh.close()
 
+
+def test_t10_canonical_url_and_stored_context_across_meetings(tmp_path: Path) -> None:
+    from ba_agent.memory.store import open_meeting
+
+    db_path = tmp_path / "meeting.db"
+    m1 = open_meeting(db_path, "https://meet.google.com/meet/abc-defg-hij?authuser=0")
+    first_id = m1.meeting_id
+    m1.add_caption(_line(12, "We agreed on 60 kWh LFP battery pack", speaker="Sara"))
+    m1.add_task(
+        TaskRecord(
+            task="battery thermal model",
+            owner="Ali",
+            due=date(2026, 10, 30),
+            due_text="Fri",
+            status="Todo",
+            key=dedup_key("battery thermal model", "Ali"),
+        )
+    )
+    m1.close()
+
+    # Variant URL without /meet/ prefix and query string matches the same active meeting.
+    same = open_meeting(db_path, "https://meet.google.com/abc-defg-hij")
+    assert same.meeting_id == first_id
+    same.set_meta("closed", "1")
+    same.close()
+
+    # A subsequent meeting can access stored tasks and previous captions via stored_context().
+    m2 = open_meeting(db_path, "https://meet.google.com/xyz-uvwx-rst")
+    assert m2.meeting_id != first_id
+    ctx = m2.stored_context()
+    assert "Stored Local Tasks:" in ctx
+    assert "Ali: battery thermal model (due: 2026-10-30) [Todo]" in ctx
+    assert "Previous Local Meeting Captions:" in ctx
+    assert "60 kWh LFP battery pack" in ctx
+    m2.close()
+
+

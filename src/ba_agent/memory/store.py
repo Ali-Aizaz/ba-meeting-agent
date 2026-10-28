@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import threading
 import uuid
@@ -10,6 +11,19 @@ from pathlib import Path
 
 from ba_agent.captions.clock import format_meeting_time
 from ba_agent.models import CaptionLine, TaskRecord
+
+_MEET_CODE_RE = re.compile(
+    r"^https://meet\.google\.com/(?:_?meet/)?([a-z]{3}-[a-z]{4}-[a-z]{3})(?:$|[/?#])",
+    re.I,
+)
+
+
+def _canonical_url(url: str) -> str:
+    cleaned = url.strip()
+    m = _MEET_CODE_RE.match(cleaned)
+    if m:
+        return f"https://meet.google.com/{m.group(1).lower()}"
+    return cleaned
 
 
 class MeetingStore:
@@ -161,6 +175,53 @@ class MeetingStore:
             ).fetchall()
         return [_task(row) for row in rows]
 
+    def all_tasks(self) -> list[TaskRecord]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT * FROM tasks
+                ORDER BY CASE WHEN meeting_id = ? THEN 0 ELSE 1 END, time, task
+                """,
+                (self.meeting_id,),
+            ).fetchall()
+        seen: set[str] = set()
+        result: list[TaskRecord] = []
+        for row in rows:
+            rec = _task(row)
+            key = rec.key or f"{rec.task.lower()}|{rec.owner.lower()}"
+            if key not in seen:
+                seen.add(key)
+                result.append(rec)
+        return result
+
+    def stored_context(self, max_tasks: int = 20, max_captions: int = 15) -> str:
+        sections: list[str] = []
+        current_keys = {t.key for t in self.tasks() if t.key}
+        past_tasks = [t for t in self.all_tasks() if t.key not in current_keys]
+        if past_tasks:
+            lines = [
+                f"- {t.owner}: {t.task} "
+                f"(due: {t.due.isoformat() if t.due else (t.due_text or 'unscheduled')}) "
+                f"[{t.status}]"
+                for t in past_tasks[:max_tasks]
+            ]
+            sections.append("Stored Local Tasks:\n" + "\n".join(lines))
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT * FROM captions WHERE meeting_id != ?
+                ORDER BY wall_time DESC, start_s DESC, id DESC LIMIT ?
+                """,
+                (self.meeting_id, max_captions),
+            ).fetchall()
+        if rows:
+            past_lines = [
+                f"{format_meeting_time(r['start_s'])} {r['speaker']}: {r['text']}"
+                for r in reversed(rows)
+            ]
+            sections.append("Previous Local Meeting Captions:\n" + "\n".join(past_lines))
+        return "\n".join(sections)
+
     def add_reply(self, text: str, wall_time: datetime | None = None) -> None:
         moment = wall_time or datetime.now().astimezone()
         with self._lock:
@@ -255,7 +316,7 @@ def open_meeting(path: Path, url: str) -> MeetingStore:
     previous = store.get_meta("active_url")
     closed = store.get_meta("closed")
     existing = store.get_meta("active_meeting_id")
-    if previous == url and closed != "1" and existing:
+    if previous and _canonical_url(previous) == _canonical_url(url) and closed != "1" and existing:
         store.meeting_id = existing
         return store
     store.meeting_id = uuid.uuid4().hex

@@ -63,6 +63,16 @@ _STOP = {
     "where",
     "which",
     "who",
+    "has",
+    "have",
+    "had",
+    "did",
+    "get",
+    "gets",
+    "got",
+    "give",
+    "talk",
+    "say",
 }
 
 _STEM_MAP = {
@@ -73,6 +83,13 @@ _STEM_MAP = {
     "tires": "tire",
     "tyre": "tire",
     "bodies": "body",
+    "braking": "brake",
+    "brakes": "brake",
+    "charging": "charge",
+    "charger": "charge",
+    "chargers": "charge",
+    "charged": "charge",
+    "charges": "charge",
 }
 
 
@@ -100,10 +117,13 @@ class KnowledgeIndex:
         query_tokens = set(_tokens(query))
         ranked: list[Chunk] = []
         for chunk in self._chunks:
-            score = _score(query_tokens, set(_tokens(chunk.text)))
+            file_tokens = set(_tokens(chunk.file.removesuffix(".md").replace("-", " ")))
+            heading_tokens = set(_tokens(chunk.heading)) if chunk.heading else set()
+            chunk_tokens = set(_tokens(chunk.text)) | file_tokens
+            score = _score(query_tokens, chunk_tokens, heading_tokens)
             if score < self.min_score:
                 continue
-            name_hit = 1 if any(token in chunk.file for token in query_tokens) else 0
+            name_hit = 1 if (query_tokens & file_tokens) else 0
             ranked.append(
                 Chunk(
                     file=chunk.file,
@@ -160,7 +180,15 @@ def _tokens(text: str) -> list[str]:
     return useful or words
 
 
-def _score(query: set[str], chunk: set[str]) -> float:
+def _score(query: set[str], chunk: set[str], heading: set[str] | None = None) -> float:
     if not query:
         return 0.0
-    return len(query & chunk) / len(query)
+    overlap = query & chunk
+    if not overlap:
+        return 0.0
+    ratio = len(overlap) / len(query)
+    if heading and heading <= query:
+        ratio = max(ratio, 0.75 + 0.05 * min(len(heading), 4))
+    if len(overlap) >= 2 and len(query) >= 4:
+        ratio = max(ratio, min(0.85, len(overlap) / 3))
+    return ratio

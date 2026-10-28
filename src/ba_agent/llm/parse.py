@@ -37,6 +37,14 @@ def parse_response(payload: dict) -> LLMResponse:
             query = action.get("query") or item.get("query") or ""
             if query:
                 queries.append(query)
+            for extra_q in action.get("queries") or []:
+                if isinstance(extra_q, str) and extra_q and extra_q not in queries:
+                    queries.append(extra_q)
+            for src in action.get("sources") or []:
+                if isinstance(src, dict) and src.get("url"):
+                    citations.append(
+                        WebCitation(url=src["url"], title=src.get("title") or "")
+                    )
         elif kind == "message":
             for block in item.get("content") or []:
                 if block.get("type") in {"output_text", "text"}:

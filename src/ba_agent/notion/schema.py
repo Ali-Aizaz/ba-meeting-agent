@@ -135,9 +135,45 @@ def _rich(text: str) -> dict:
 
 
 def plain_property(prop: dict) -> str:
+    if not isinstance(prop, dict):
+        return ""
     kind = prop.get("type")
-    if kind == "title":
-        return "".join(part.get("plain_text", "") for part in prop.get("title") or [])
-    if kind == "rich_text":
-        return "".join(part.get("plain_text", "") for part in prop.get("rich_text") or [])
+    if kind == "title" or "title" in prop:
+        return "".join(
+            part.get("plain_text") or (part.get("text") or {}).get("content") or ""
+            for part in (prop.get("title") or [])
+            if isinstance(part, dict)
+        )
+    if kind == "rich_text" or "rich_text" in prop:
+        return "".join(
+            part.get("plain_text") or (part.get("text") or {}).get("content") or ""
+            for part in (prop.get("rich_text") or [])
+            if isinstance(part, dict)
+        )
+    if kind == "date" or "date" in prop:
+        date_obj = prop.get("date")
+        if isinstance(date_obj, dict):
+            return str(date_obj.get("start") or "")
+        return ""
+    if kind == "status" or "status" in prop:
+        status_obj = prop.get("status")
+        if isinstance(status_obj, dict):
+            return str(status_obj.get("name") or "")
+        return ""
+    if kind == "select" or "select" in prop:
+        select_obj = prop.get("select")
+        if isinstance(select_obj, dict):
+            return str(select_obj.get("name") or "")
+        return ""
+    if kind == "url" or "url" in prop:
+        return str(prop.get("url") or "")
+    if kind == "number" or "number" in prop:
+        val = prop.get("number")
+        return "" if val is None else str(val)
+    if kind == "people" or "people" in prop:
+        return ", ".join(
+            str(p.get("name") or "")
+            for p in (prop.get("people") or [])
+            if isinstance(p, dict) and p.get("name")
+        )
     return ""

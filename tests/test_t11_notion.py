@@ -76,7 +76,8 @@ class _FakeNotion:
                 },
             )
         if path.endswith("/query"):
-            return httpx.Response(200, json={"results": self.tasks, "has_more": False})
+            results = self.summaries if "db_summary" in path else self.tasks
+            return httpx.Response(200, json={"results": results, "has_more": False})
         if request.method == "POST" and path.endswith("/pages"):
             parent = body.get("parent") or {}
             page_id = f"page-{len(self.tasks) + len(self.summaries) + 1}"
@@ -102,6 +103,8 @@ class _FakeNotion:
             page_id = path.rstrip("/").split("/")[-1]
             for page in self.summaries:
                 if page["id"] == page_id:
+                    if "properties" in body:
+                        page["properties"].update(_read_props(body["properties"]))
                     return httpx.Response(200, json=page)
             return httpx.Response(404, json={"message": "missing"})
         return httpx.Response(404, json={"message": path})
@@ -116,6 +119,12 @@ def _read_props(properties: dict) -> dict:
         elif "rich_text" in value and value["rich_text"]:
             text = value["rich_text"][0]["text"]["content"]
             read[name] = {"type": "rich_text", "rich_text": [{"plain_text": text}]}
+        elif "date" in value and value["date"]:
+            read[name] = {"type": "date", "date": value["date"]}
+        elif "select" in value and value["select"]:
+            read[name] = {"type": "select", "select": value["select"]}
+        elif "status" in value and value["status"]:
+            read[name] = {"type": "status", "status": value["status"]}
     return read
 
 
@@ -320,4 +329,47 @@ async def test_t11_live_save_without_children_then_final_save_with_llm_fallback(
     assert len(poster.posted) == 1
     await service.aclose()
     store.close()
+
+
+@pytest.mark.asyncio
+async def test_t11_list_tasks_summaries_and_database_context() -> None:
+    fake = _FakeNotion()
+    service = _service(fake)
+    await service.verify()
+    rec = TaskRecord(
+        task="Finalize brake thermal test plan",
+        owner="Omar",
+        due=date(2026, 10, 30),
+        due_text="2026-10-30",
+        status="Todo",
+        said_by="Sara",
+        time="[00:12]",
+        key=dedup_key("Finalize brake thermal test plan", "Omar"),
+    )
+    await service.create_task(rec)
+    await service.save_meeting(
+        "Chassis and Safety Review: agreed on ventilated discs.",
+        "[00:05] Omar: We need to test thermal fade.",
+        [rec],
+    )
+
+    tasks = await service.list_tasks(refresh=True)
+    assert len(tasks) == 1
+    assert tasks[0].task == "Finalize brake thermal test plan"
+    assert tasks[0].owner == "Omar"
+    assert tasks[0].due == date(2026, 10, 30)
+    assert tasks[0].status == "Todo"
+
+    summaries = await service.list_summaries(refresh=True)
+    assert len(summaries) == 1
+    assert "Chassis and Safety Review" in summaries[0]["summary"]
+    assert "thermal fade" in summaries[0]["transcript"]
+
+    ctx = await service.database_context(refresh=True)
+    assert "Stored Notion Tasks:" in ctx
+    assert "Omar: Finalize brake thermal test plan (due: 2026-10-30) [Todo]" in ctx
+    assert "Stored Notion Meeting Notes:" in ctx
+    assert "Chassis and Safety Review" in ctx
+    await service.aclose()
+
 

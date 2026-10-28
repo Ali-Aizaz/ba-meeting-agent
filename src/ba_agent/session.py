@@ -20,7 +20,7 @@ from ba_agent.guardrails.search import query_allowed, strip_meeting_text
 from ba_agent.knowledge.search import KnowledgeIndex
 from ba_agent.llm import build_llm
 from ba_agent.logging_setup import configure_logging, set_meeting_id
-from ba_agent.memory.store import MeetingStore, open_meeting
+from ba_agent.memory.store import MeetingStore, _canonical_url, open_meeting
 from ba_agent.models import CaptionLine, PostReason, TaskRecord, TriggerEvent, WebResult
 from ba_agent.notion.client import NotionService, TaskWrite
 from ba_agent.notion.messages import notes_saved, task_failed
@@ -85,10 +85,14 @@ async def run_join(settings: Settings, url: str) -> None:
 
     def on_join_request(new_url: str) -> None:
         def _schedule() -> None:
+            same_meeting = _canonical_url(new_url) == _canonical_url(current_url)
+            if same_meeting and status.stage in {"joining", "in_call"}:
+                logger.info("ignoring duplicate /join for active meeting %s", new_url)
+                return
             queued_url.clear()
             queued_url.append(new_url)
             next_url_event.set()
-            if new_url != current_url or adapter._admitted_at is None:
+            if not same_meeting or adapter._admitted_at is None:
                 adapter.ended_event.set()
 
         loop.call_soon_threadsafe(_schedule)
@@ -215,6 +219,17 @@ async def _run_single_meeting(
         async def leave() -> None:
             adapter.ended_event.set()
 
+        async def fetch_db_context() -> str:
+            parts: list[str] = []
+            if notion is not None and notion.configured:
+                notion_ctx = await notion.database_context()
+                if notion_ctx:
+                    parts.append(notion_ctx)
+            local_ctx = store.stored_context()
+            if local_ctx:
+                parts.append(local_ctx)
+            return "\n".join(parts)
+
         agent = AgentLoop(
             knowledge=knowledge,
             search_cars=guarded_search,
@@ -229,6 +244,7 @@ async def _run_single_meeting(
             min_score=settings.knowledge.min_score,
             timeout_s=settings.llm.timeout_s,
             on_activity=status.record_activity,
+            fetch_db_context=fetch_db_context,
         )
         bus = EventBus()
         pump = CaptionPump(adapter.drain_caption_frames, Stabilizer(settings.captions.stable_ms))

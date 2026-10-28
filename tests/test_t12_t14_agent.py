@@ -313,3 +313,50 @@ async def test_t12_activity_events_emitted_during_agent_actions() -> None:
     assert any("asking for clarification" in t.lower() for t, _k in activities)
     assert activities[-1][1] == "info"
     assert "follow-up" in activities[-1][0].lower()
+
+
+@pytest.mark.asyncio
+async def test_t12_stored_database_context_and_web_fallback_priority() -> None:
+    class FailingLLM:
+        async def respond(self, *args, **kwargs):
+            raise RuntimeError("401 Invalid API Key")
+
+    async def search_cars(query: str) -> WebResult:
+        return WebResult(
+            text="The 2025 Toyota RAV4 Hybrid starts at $32,850 MSRP.",
+            urls=["https://www.toyota.com/rav4hybrid"],
+        )
+
+    db_ctx = (
+        "Stored Notion Tasks:\n"
+        "- Ali: Send competitor pricing table for 3 compact SUVs (due 2026-04-16) [Todo]\n"
+        "- Omar: Finalize brake pad supplier shortlist (due 2026-04-17) [Done]\n"
+        "Stored Notion Meeting Notes:\n"
+        "- powertrain-kickoff (2026-04-10): Agreed to target a 60 kWh LFP pack for the entry trim."
+    )
+
+    agent, poster, _ = _agent("unused", search_cars)
+    agent.llm = FailingLLM()
+    agent.digest = lambda: "Participants: none\nTasks:\nnone\nRecent:"
+    agent.fetch_db_context = lambda: db_ctx
+
+    # 1. Price question prefers live web result over partial examples.md hit when LLM fails.
+    await agent.handle(
+        _event("what is the current price of a Toyota RAV4 hybrid?", trigger_id="t_web_fb")
+    )
+    reply_web = poster.posts[-1][0]
+    assert "$32,850" in reply_web
+    assert "https://www.toyota.com/rav4hybrid" in reply_web
+
+    # 2. Stored task query returns tasks from Notion/SQLite database context.
+    await agent.handle(_event("what tasks are assigned to Ali in Notion?", trigger_id="t_db_tasks"))
+    reply_tasks = poster.posts[-1][0]
+    assert "Ali: Send competitor pricing table for 3 compact SUVs" in reply_tasks
+
+    # 3. Past meeting summary query returns stored Notion meeting notes.
+    await agent.handle(
+        _event("what did we decide in the powertrain-kickoff meeting?", trigger_id="t_db_notes")
+    )
+    reply_notes = poster.posts[-1][0]
+    assert "60 kWh LFP pack" in reply_notes
+
