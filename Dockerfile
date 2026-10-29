@@ -18,6 +18,7 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 ENV PYTHONUNBUFFERED=1
 ENV BA_BROWSER__HEADLESS=false
 ENV BA_BROWSER__PROFILE_DIR=/app/data/browser-profile
+ENV BA_BUILD_REV=v10
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["join"]
