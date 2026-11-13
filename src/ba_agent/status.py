@@ -139,16 +139,20 @@ def start_status_server(state: StatusState, host: str, port: int) -> ThreadingHT
             # "/" is the Render health check and the public service URL.
             if self.path.split("?", 1)[0] not in {"/", "/status"}:
                 self.send_response(404)
+                self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
             self._send_json(state.as_dict(), 200)
 
         def do_POST(self) -> None:  # noqa: N802
+            length = int(self.headers.get("Content-Length") or "0")
             if self.path.split("?", 1)[0] != "/join":
+                if 0 < length <= 65536:
+                    self.rfile.read(length)
                 self.send_response(404)
+                self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
-            length = int(self.headers.get("Content-Length") or "0")
             raw = self.rfile.read(length) if length > 0 else b"{}"
             try:
                 data = json.loads(raw.decode("utf-8"))
