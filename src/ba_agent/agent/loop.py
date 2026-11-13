@@ -26,7 +26,9 @@ from ba_agent.guardrails.citations import (
 from ba_agent.knowledge.policy import (
     classify_query_intent,
     has_car_topic,
+    is_database_overview_query,
     is_meeting_question,
+    normalize_asr_query,
     should_search_web,
 )
 from ba_agent.knowledge.search import Chunk, KnowledgeIndex
@@ -38,6 +40,7 @@ from ba_agent.tasks_extract.extractor import (
     apply_followup,
     dedup_key,
     fallback_overheard_tasks,
+    is_addressed_line,
     is_task_request,
     normalize_owner,
     parse_task_command,
@@ -335,12 +338,22 @@ class AgentLoop:
         return result.message, PostReason.CONFIRMATION, started, time.perf_counter()
 
     async def _answer(self, question: str, event: TriggerEvent, started: float):
+        raw_question = question
+        question = normalize_asr_query(question)
         self._emit_activity(f'Searching knowledge base for "{question[:60]}"…', "working")
         hits = self.knowledge.search(question)
         web: WebResult | None = None
         compact_local = self._local_digest(max_tokens=600)
         participants = self._known_participants(compact_local)
         intent = classify_query_intent(question, hits, participants)
+        if is_database_overview_query(question) and len(hits) < 3:
+            overview_fn = getattr(self.knowledge, "overview_chunks", None)
+            if callable(overview_fn):
+                seen_src = {h.source for h in hits}
+                for extra in overview_fn(question, limit=5):
+                    if extra.source not in seen_src:
+                        seen_src.add(extra.source)
+                        hits.append(extra)
         car = intent in {"car", "hybrid"}
         web_needed = car and should_search_web(question, hits, self.min_score)
         tool_at = time.perf_counter()
@@ -350,12 +363,14 @@ class AgentLoop:
                 self._emit_activity(f'Searching web for "{question[:60]}"…', "working")
                 web = await self._safe_search_cars(question)
                 tool_at = time.perf_counter()
-            if not hits and not (web and web.useful):
+            if not hits and not (web and web.grounded):
                 if self.fetch_db_context is not None:
                     self._emit_activity("Fetching stored data from database…", "working")
                 full_digest = await self._full_digest()
                 digest_loaded = True
-                if _digest_has_match(question, full_digest):
+                if _digest_has_match(
+                    question, _strip_self_echo(full_digest, raw_question, question)
+                ):
                     car = False
                     intent = "meeting"
                 else:
@@ -376,8 +391,10 @@ class AgentLoop:
                     self._emit_activity("Fetching stored data from database…", "working")
                 full_digest = await self._full_digest()
                 digest_loaded = True
-            if not hits and not (web and web.useful):
-                if _digest_has_match(question, full_digest):
+            if not hits and not (web and web.grounded):
+                if _digest_has_match(
+                    question, _strip_self_echo(full_digest, raw_question, question)
+                ):
                     car = False
                     intent = "meeting"
                 else:
@@ -388,7 +405,8 @@ class AgentLoop:
             full_digest = await self._full_digest()
             digest_loaded = True
 
-        if _is_off_topic(question, full_digest, car):
+        digest_no_self = _strip_self_echo(full_digest, raw_question, question)
+        if _is_off_topic(question, digest_no_self, car) and not hits:
             return OFF_TOPIC, PostReason.REPLY, started, tool_at
         model_at = time.perf_counter()
         self._emit_activity(f"Thinking — generating reply for {event.speaker}…", "working")
@@ -408,7 +426,7 @@ class AgentLoop:
             None
             if (
                 web is not None
-                and web.useful
+                and web.grounded
                 and not is_task_request(question)
                 and not _is_save(question)
             )
@@ -429,11 +447,11 @@ class AgentLoop:
                 if tool_outcome is not None:
                     return tool_outcome
                 intent = classify_query_intent(question, hits, participants)
-                car = intent in {"car", "hybrid"} or (web is not None and web.useful)
+                car = intent in {"car", "hybrid"} or (web is not None and web.grounded)
                 if not digest_loaded and (
                     not car
                     or intent == "hybrid"
-                    or (not hits and not (web and web.useful))
+                    or (not hits and not (web and web.grounded))
                 ):
                     full_digest = await self._full_digest()
                     digest_loaded = True
@@ -460,7 +478,8 @@ class AgentLoop:
                     max_output_tokens=450,
                 )
             if not car:
-                text = _resolve_meeting_reply(first.text, question, full_digest)
+                digest_clean = _strip_self_echo(full_digest, raw_question, question)
+                text = _resolve_meeting_reply(first.text, question, digest_clean, hits=hits)
                 return text, PostReason.REPLY, model_at, tool_at
 
             allowed_files = {hit.file for hit in hits}
@@ -482,16 +501,17 @@ class AgentLoop:
             elif (
                 first.text.strip()
                 and not is_unsure(first.text)
+                and "did you mean" not in first.text.lower()
                 and numbers_grounded_in_context(first.text, context_blob)
             ):
-                if web is not None and web.useful and len(web.urls) == 1:
+                if web is not None and web.grounded:
                     return (
                         f"{first.text.rstrip()} ({web.urls[0]})",
                         PostReason.REPLY,
                         model_at,
                         tool_at,
                     )
-                if (web is None or not web.useful) and len(allowed_files) == 1 and hits:
+                if hits:
                     return (
                         f"{first.text.rstrip()} (src: {hits[0].file})",
                         PostReason.REPLY,
@@ -563,7 +583,7 @@ class AgentLoop:
             result = await self.create_task(task_records[0])
             return result.message, PostReason.CONFIRMATION, model_at, time.perf_counter()
         if car:
-            if prefer_web and web and web.useful and web.text:
+            if prefer_web and web and web.grounded and web.text:
                 return _format_web_fallback(web), PostReason.REPLY, model_at, tool_at
             if hits:
                 top = hits[0]
@@ -574,7 +594,7 @@ class AgentLoop:
                 ]
                 summary = " ".join(lines[:2]).strip() or top.text.strip()
                 return f"{summary} (src: {top.file})", PostReason.REPLY, model_at, tool_at
-            if web and web.useful and web.text:
+            if web and web.grounded and web.text:
                 return _format_web_fallback(web), PostReason.REPLY, model_at, tool_at
             return NOT_SURE, PostReason.REPLY, model_at, tool_at
         norm_q = question.lower().strip(" .,!?;:")
@@ -586,9 +606,13 @@ class AgentLoop:
                 model_at,
                 tool_at,
             )
-        digest_text = (full_digest if full_digest is not None else (self.digest() or "")).strip()
+        digest_text = _strip_self_echo(
+            (full_digest if full_digest is not None else (self.digest() or "")).strip(),
+            event.question,
+            question,
+        )
         return (
-            _answer_from_digest(question, digest_text),
+            _answer_from_digest(question, digest_text, hits=hits),
             PostReason.REPLY,
             model_at,
             tool_at,
@@ -667,8 +691,8 @@ class AgentLoop:
                             seen_sources.add(extra.source)
                             hits.append(extra)
             if call.name == "search_cars":
-                query = str((call.arguments or {}).get("query") or "").strip()
-                if query and has_car_topic(query) and (web is None or not web.useful):
+                query = normalize_asr_query(str((call.arguments or {}).get("query") or "").strip())
+                if query and has_car_topic(query) and (web is None or not web.grounded):
                     self._emit_activity(f'Searching web for "{query[:50]}"…', "working")
                     try:
                         web = await self.search_cars(query)
@@ -872,6 +896,31 @@ _DIGEST_STOP = {
 }
 
 
+_CAPTION_PREFIX_RE = re.compile(r"^\[\d{1,2}:\d{2}(?::\d{2})?\]\s+[^:]+:\s*")
+
+
+def _strip_self_echo(digest: str, raw_question: str, norm_question: str = "") -> str:
+    """Remove addressed 'Hey BA' command lines and the current question from Recent captions."""
+    if not digest:
+        return ""
+    targets = {
+        " ".join(q.lower().split()).strip(" .,!?;:")
+        for q in (raw_question, norm_question)
+        if q and q.strip()
+    }
+    kept: list[str] = []
+    for raw in digest.splitlines():
+        stripped = raw.strip()
+        m = _CAPTION_PREFIX_RE.match(stripped)
+        if m is not None:
+            body = stripped[m.end() :].strip()
+            body_norm = " ".join(body.lower().split()).strip(" .,!?;:")
+            if is_addressed_line(body) or body_norm in targets:
+                continue
+        kept.append(raw)
+    return "\n".join(kept)
+
+
 def _parse_digest_sections(digest: str) -> tuple[list[str], list[str], list[str], str]:
     section = "transcript"
     task_lines: list[str] = []
@@ -893,7 +942,11 @@ def _parse_digest_sections(digest: str) -> tuple[list[str], list[str], list[str]
         if low == "stored notion meeting notes:":
             section = "notes"
             continue
-        if low in {"recent:", "previous local meeting captions:"}:
+        if low in {
+            "recent:",
+            "previous local meeting captions:",
+            "previous local chat messages:",
+        }:
             section = "transcript"
             continue
         if low == "bot replies:":
@@ -936,11 +989,17 @@ def _digest_has_match(question: str, digest: str) -> bool:
     return bool(_rank_lines(all_lines, keywords, q_lower))
 
 
-def _resolve_meeting_reply(llm_text: str | None, question: str, digest: str) -> str:
+def _resolve_meeting_reply(
+    llm_text: str | None,
+    question: str,
+    digest: str,
+    *,
+    hits: list[Chunk] | None = None,
+) -> str:
     text = (llm_text or "").strip()
     low = text.lower()
     if not text or ("hey ba" in low and ("say" in low or "trigger" in low or "address" in low)):
-        return _answer_from_digest(question, digest)
+        return _answer_from_digest(question, digest, hits=hits)
     false_empty_cues = (
         "don't have that in this meeting",
         "do not have that in this meeting",
@@ -949,16 +1008,20 @@ def _resolve_meeting_reply(llm_text: str | None, question: str, digest: str) -> 
         "only have access to the current meeting",
         "don't have access to previous",
         "do not have access to previous",
+        "can't access a car database",
+        "cannot access a car database",
+        "don't have access to a database",
         "no tasks",
         "no action items",
         "nothing has been recorded",
     )
     if is_unsure(text) or any(cue in low for cue in false_empty_cues):
-        fallback = _answer_from_digest(question, digest)
+        fallback = _answer_from_digest(question, digest, hits=hits)
         if fallback.startswith((
             "Recorded tasks:",
             "Stored meeting notes:",
             "From the meeting",
+            "Knowledge base",
         )):
             return fallback
         if is_unsure(text) and fallback.startswith("No recorded tasks matched"):
@@ -1037,8 +1100,13 @@ def _match_existing_task_in_digest(
     return None
 
 
-def _answer_from_digest(question: str, digest: str) -> str:
-    if not digest.strip():
+def _answer_from_digest(
+    question: str,
+    digest: str,
+    *,
+    hits: list[Chunk] | None = None,
+) -> str:
+    if not digest.strip() and not hits:
         return "The meeting just started — nothing has been recorded yet."
 
     task_lines, note_lines, transcript_lines, participants_line = _parse_digest_sections(digest)
@@ -1050,6 +1118,20 @@ def _answer_from_digest(question: str, digest: str) -> str:
         if len(w.strip(".,!?;:\"'()[]")) > 2
     ]
     keywords = [w for w in raw_words if w not in _DIGEST_STOP]
+
+    if is_database_overview_query(question) and hits and has_car_topic(question):
+        kb_snippets: list[str] = []
+        for hit in hits[:2]:
+            lines = [
+                ln.strip().lstrip("#*- ").strip()
+                for ln in hit.text.splitlines()
+                if ln.strip() and not ln.strip().startswith("#")
+            ]
+            if lines:
+                kb_snippets.append(f"{lines[0]} (src: {hit.file})")
+        if kb_snippets:
+            prefix = f"Stored meeting notes: {note_lines[0]} | " if note_lines else ""
+            return f"{prefix}Knowledge base vehicles & topics: {' | '.join(kb_snippets)}"
 
     is_task_query = any(
         term in q_lower

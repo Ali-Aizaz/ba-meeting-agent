@@ -38,7 +38,7 @@ const STATUS_CACHE_TTL_MS = 1_500;
 const IDLE_STOP_DELAY_SECONDS = 900;
 const STORAGE_MEET_URL_KEY = "meet_url";
 const STORAGE_ENV_SIG_KEY = "env_sig";
-const WORKER_BUILD_SIG = "v13";
+const WORKER_BUILD_SIG = "v14";
 const MEET_HOST = ["meet", "google", "com"].join(".");
 const MEET_CODE_PATH = /^(?:\/_?meet)?\/([a-z]{3}-[a-z]{4}-[a-z]{3})(?:$|[/?#])/i;
 

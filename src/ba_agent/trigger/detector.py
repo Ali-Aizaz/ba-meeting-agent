@@ -42,6 +42,76 @@ _IMMEDIATE_ONE_WORD = {
     "hey",
 }
 
+_INCOMPLETE_SPEECH_PREAMBLES: set[tuple[str, ...]] = {
+    ("can", "you"),
+    ("could", "you"),
+    ("would", "you"),
+    ("will", "you"),
+    ("can", "you", "please"),
+    ("could", "you", "please"),
+    ("can", "you", "also"),
+    ("could", "you", "also"),
+    ("can", "you", "tell"),
+    ("can", "you", "tell", "me"),
+    ("could", "you", "tell", "me"),
+    ("tell", "me"),
+    ("tell", "me", "about"),
+    ("can", "you", "tell", "me", "about"),
+    ("could", "you", "tell", "me", "about"),
+    ("can", "you", "check"),
+    ("can", "you", "show"),
+    ("can", "you", "show", "me"),
+    ("can", "you", "give"),
+    ("can", "you", "give", "me"),
+    ("can", "you", "add"),
+    ("can", "you", "also", "add"),
+    ("can", "you", "create"),
+    ("add", "a"),
+    ("add", "a", "task"),
+    ("create", "a"),
+    ("create", "a", "task"),
+    ("what", "is"),
+    ("what", "are"),
+    ("what", "about"),
+    ("how", "about"),
+    ("which", "one"),
+}
+
+_DANGLING_END_WORDS = {
+    "about",
+    "the",
+    "a",
+    "an",
+    "for",
+    "to",
+    "of",
+    "with",
+    "from",
+    "into",
+    "between",
+    "versus",
+    "vs",
+    "and",
+    "or",
+}
+
+
+def _is_incomplete_speech_fragment(question: str) -> bool:
+    words = [
+        w.lower().strip(".,!?;:\"'")
+        for w in question.split()
+        if w.strip(".,!?;:\"'")
+    ]
+    if not words:
+        return False
+    if len(words) == 1:
+        return words[0] not in _IMMEDIATE_ONE_WORD
+    if tuple(words) in _INCOMPLETE_SPEECH_PREAMBLES:
+        return True
+    if len(words) <= 6 and words[-1] in _DANGLING_END_WORDS:
+        return True
+    return False
+
 
 @dataclass
 class _Pending:
@@ -90,6 +160,7 @@ class TriggerDetector:
         self.pending: _Pending | None = None
         self.followup: _Followup | None = None
         self.last: _Last | None = None
+        self._recent: list[_Last] = []
 
     def arm_followup(self, speaker: str, now: float) -> None:
         self.followup = _Followup(speaker=speaker, until=now + self.followup_window_s)
@@ -134,7 +205,17 @@ class TriggerDetector:
             if speaker == self.pending.speaker and t <= merge_deadline:
                 pending = self.pending
                 self.pending = None
-                events.extend(self._merge(pending, speaker, text, source, t, caption_id))
+                events.extend(
+                    self._merge(
+                        pending,
+                        speaker,
+                        text,
+                        source,
+                        t,
+                        caption_id,
+                        committed_at=committed_at,
+                    )
+                )
                 return events
             if t > merge_deadline:
                 events.extend(self._expire(t))
@@ -149,7 +230,7 @@ class TriggerDetector:
                 extra_phrases=self.extra_phrases,
             )
             if explicit_match is not None and len(explicit_match.question.split()) >= 2:
-                if not self._duplicate(speaker, explicit_match.question, t):
+                if not self._duplicate(speaker, explicit_match.question, t, source=source):
                     events.append(
                         self._emit(
                             explicit_match.question, speaker, source, t, caption_id, followup=False
@@ -159,7 +240,7 @@ class TriggerDetector:
             raw_tokens = text.strip().split()
             kept = _truncate_question_len(raw_tokens)
             question = " ".join(raw_tokens[:kept]).strip(" .,!?;:")
-            if not self._duplicate(speaker, question, t):
+            if not self._duplicate(speaker, question, t, source=source):
                 events.append(self._emit(question, speaker, source, t, caption_id, followup=True))
             return events
         match = match_wake(
@@ -178,10 +259,9 @@ class TriggerDetector:
             return events
         words = match.question.split()
         single_token = words[0].lower().strip(".,!?;:") if len(words) == 1 else ""
-        if (
-            len(words) < 2
-            and source != "chat"
-            and single_token not in _IMMEDIATE_ONE_WORD
+        if source != "chat" and (
+            (len(words) < 2 and single_token not in _IMMEDIATE_ONE_WORD)
+            or _is_incomplete_speech_fragment(match.question)
         ):
             commit_t = max(t, committed_at) if committed_at is not None else None
             self.pending = _Pending(
@@ -193,12 +273,22 @@ class TriggerDetector:
                 committed_at=commit_t,
             )
             return events
-        if self._duplicate(speaker, match.question, t):
+        if self._duplicate(speaker, match.question, t, source=source):
             return events
         events.append(self._emit(match.question, speaker, source, t, caption_id, followup=False))
         return events
 
-    def _merge(self, pending, speaker, text, source, t, caption_id) -> list[TriggerEvent]:
+    def _merge(
+        self,
+        pending,
+        speaker,
+        text,
+        source,
+        t,
+        caption_id,
+        *,
+        committed_at: float | None = None,
+    ) -> list[TriggerEvent]:
         match = match_wake(
             text,
             fuzzy=self.fuzzy,
@@ -218,7 +308,18 @@ class TriggerDetector:
                 kept = _truncate_question_len(raw_tokens)
                 merged_tail = " ".join(raw_tokens[:kept]).strip(" .,!?;:")
                 question = f"{pending.fragment} {merged_tail}".strip()
-        if self._duplicate(speaker, question, t):
+        if source != "chat" and question and _is_incomplete_speech_fragment(question):
+            commit_t = max(t, committed_at) if committed_at is not None else t
+            self.pending = _Pending(
+                speaker,
+                question,
+                source,
+                pending.t,
+                caption_id,
+                committed_at=commit_t,
+            )
+            return []
+        if self._duplicate(speaker, question, t, source=source):
             return []
         return [self._emit(question, speaker, source, t, caption_id, followup=False)]
 
@@ -227,9 +328,14 @@ class TriggerDetector:
         if pending is None:
             return []
         self.pending = None
+        expired_q = (
+            ""
+            if (pending.source != "chat" and _is_incomplete_speech_fragment(pending.fragment))
+            else pending.fragment
+        )
         return [
             self._emit(
-                pending.fragment,
+                expired_q,
                 pending.speaker,
                 pending.source,
                 t,
@@ -238,22 +344,40 @@ class TriggerDetector:
             )
         ]
 
-    def _duplicate(self, speaker: str, question: str, t: float) -> bool:
-        if self.last is None or speaker != self.last.speaker:
-            return False
-        dt = t - self.last.t
-        if dt > max(self.dedup_window_s, 12.0):
-            return False
+    def _duplicate(
+        self,
+        speaker: str,
+        question: str,
+        t: float,
+        *,
+        source: str = "speech",
+    ) -> bool:
         q_clean = question.strip().lower().rstrip(".?!")
-        last_clean = self.last.question.strip().lower().rstrip(".?!")
-        if not q_clean or not last_clean:
+        if not q_clean:
             return False
-        if dt <= self.dedup_window_s and fuzz.ratio(q_clean, last_clean) >= 90:
-            return True
-        if len(last_clean.split()) >= 2 and (
-            q_clean == last_clean or q_clean.startswith(last_clean + " ")
-        ):
-            return True
+        if self.last is not None and speaker == self.last.speaker:
+            dt = t - self.last.t
+            last_clean = self.last.question.strip().lower().rstrip(".?!")
+            if last_clean and 0.0 <= dt <= max(self.dedup_window_s, 12.0):
+                if dt <= self.dedup_window_s and fuzz.ratio(q_clean, last_clean) >= 90:
+                    return True
+                if len(last_clean.split()) >= 2 and (
+                    q_clean == last_clean or q_clean.startswith(last_clean + " ")
+                ):
+                    return True
+        if source != "chat" and len(q_clean.split()) >= 4:
+            replay_window = max(self.dedup_window_s, 180.0 if len(q_clean.split()) >= 5 else 60.0)
+            for prev in reversed(self._recent):
+                if prev.speaker != speaker:
+                    continue
+                dt = t - prev.t
+                if dt < 0.0 or dt > replay_window:
+                    continue
+                prev_clean = prev.question.strip().lower().rstrip(".?!")
+                if prev_clean and (
+                    q_clean == prev_clean or q_clean.startswith(prev_clean + " ")
+                ):
+                    return True
         return False
 
     def _emit(self, question, speaker, source, t, caption_id, *, followup: bool) -> TriggerEvent:
@@ -267,5 +391,8 @@ class TriggerDetector:
             followup=followup,
             t_committed_perf=time.perf_counter(),
         )
-        self.last = _Last(speaker=speaker, question=question, t=t)
+        entry = _Last(speaker=speaker, question=question, t=t)
+        self.last = entry
+        self._recent = [item for item in self._recent if 0.0 <= t - item.t <= 240.0][-29:]
+        self._recent.append(entry)
         return event

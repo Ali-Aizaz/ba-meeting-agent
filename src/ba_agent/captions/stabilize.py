@@ -60,6 +60,8 @@ class Stabilizer:
         self.extra_phrases = extra_phrases or []
         self.open: dict[str, _Open] = {}
         self.committed: dict[str, tuple[str, str]] = {}
+        self._recent_commits: list[tuple[str, str, str, float]] = []
+        self._last_seen_ids: set[str] = set()
 
     def has_open_row_for(
         self,
@@ -78,7 +80,21 @@ class Stabilizer:
     def push_frame(self, rows: list[CaptionRow], now: float) -> list[RawCaption]:
         committed: list[RawCaption] = []
         seen: set[str] = set()
-        for row in rows:
+        incoming_ids = {r.row_id for r in rows if r.text.strip()}
+        new_ids = [
+            r.row_id
+            for r in rows
+            if r.row_id not in self.committed
+            and r.row_id not in self.open
+            and r.text.strip()
+            and r.speaker.strip().lower() not in self.bot_names
+        ]
+        all_ids_replaced = (
+            bool(self._last_seen_ids)
+            and bool(incoming_ids)
+            and incoming_ids.isdisjoint(self._last_seen_ids)
+        )
+        for idx, row in enumerate(rows):
             full_text = " ".join(row.text.split())
             speaker = row.speaker.strip()
             seen.add(row.row_id)
@@ -86,6 +102,18 @@ class Stabilizer:
                 self.open.pop(row.row_id, None)
                 continue
             prev_committed = self.committed.get(row.row_id)
+            current = self.open.get(row.row_id)
+            if prev_committed is None and current is None:
+                remount_prefix = self._match_remounted_commit(
+                    speaker,
+                    full_text,
+                    now,
+                    is_batch_or_non_tail=(len(new_ids) >= 2 or idx < len(rows) - 1),
+                    all_ids_replaced=all_ids_replaced,
+                )
+                if remount_prefix is not None:
+                    prev_committed = (speaker, remount_prefix)
+                    self.committed[row.row_id] = prev_committed
             if prev_committed == (speaker, full_text):
                 continue
             text = full_text
@@ -96,7 +124,6 @@ class Stabilizer:
                     self.committed[row.row_id] = (speaker, full_text)
                     self.open.pop(row.row_id, None)
                     continue
-            current = self.open.get(row.row_id)
             wake_split = split_completed_wake_sentence(text)
             if wake_split is not None:
                 wake_head, wake_tail = wake_split
@@ -109,6 +136,7 @@ class Stabilizer:
                     committed.extend(self._commit_others(now))
                 self.open.pop(row.row_id, None)
                 self.committed[row.row_id] = (speaker, committed_prefix_full)
+                self._record_commit(speaker, committed_prefix_full, now)
                 committed.append(RawCaption(speaker, wake_head, start_s, now, row.row_id))
                 self.open[row.row_id] = _Open(row.row_id, speaker, wake_tail, now, now, full_text)
                 continue
@@ -139,7 +167,46 @@ class Stabilizer:
                     threshold_s = self.wake_stable_s
             if now - current.last_change + 1e-9 >= threshold_s:
                 committed.append(self._commit(current, now))
+        if rows:
+            self._last_seen_ids = set(seen)
         return committed
+
+    def _record_commit(self, speaker: str, raw_full: str, now: float) -> None:
+        norm_full = _norm_utterance(raw_full)
+        if not norm_full:
+            return
+        self._recent_commits = [
+            item for item in self._recent_commits if 0.0 <= now - item[3] <= 240.0
+        ]
+        self._recent_commits.append((speaker.lower(), norm_full, raw_full, now))
+
+    def _match_remounted_commit(
+        self,
+        speaker: str,
+        full_text: str,
+        now: float,
+        *,
+        is_batch_or_non_tail: bool,
+        all_ids_replaced: bool,
+    ) -> str | None:
+        if not (is_batch_or_non_tail or all_ids_replaced):
+            return None
+        norm_full = _norm_utterance(full_text)
+        words = norm_full.split()
+        min_words = 2 if is_batch_or_non_tail else 4
+        if len(words) < min_words:
+            return None
+        spk_low = speaker.lower()
+        for prev_spk, prev_norm, prev_raw, prev_t in reversed(self._recent_commits):
+            if prev_spk != spk_low or not (0.0 <= now - prev_t <= 240.0):
+                continue
+            if norm_full == prev_norm or prev_norm.startswith(norm_full + " "):
+                return full_text
+            if is_batch_or_non_tail and norm_full in prev_norm:
+                return full_text
+            if norm_full.startswith(prev_norm + " "):
+                return prev_raw
+        return None
 
     def _commit_others(self, now: float) -> list[RawCaption]:
         committed = [self._commit(current, now) for current in list(self.open.values())]
@@ -147,15 +214,18 @@ class Stabilizer:
 
     def _commit(self, current: _Open, now: float) -> RawCaption:
         self.open.pop(current.row_id, None)
-        self.committed[current.row_id] = (
-            current.speaker,
-            current.full_text or current.text,
-        )
+        full_val = current.full_text or current.text
+        self.committed[current.row_id] = (current.speaker, full_val)
+        self._record_commit(current.speaker, full_val, now)
         return RawCaption(current.speaker, current.text, current.start_s, now, current.row_id)
 
 
 def _norm_word(word: str) -> str:
     return "".join(ch for ch in word.lower() if ch.isalnum())
+
+
+def _norm_utterance(text: str) -> str:
+    return " ".join(_norm_word(w) for w in text.split() if _norm_word(w))
 
 
 def _strip_committed_prefix(prev_full: str, full_text: str) -> str:

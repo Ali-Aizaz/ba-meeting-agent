@@ -641,5 +641,87 @@ def test_word_boundary_off_topic_blocks_substring_collisions() -> None:
     )
 
 
+@pytest.mark.asyncio
+async def test_asr_homophones_database_car_queries_self_echo_and_multi_url_citation() -> None:
+    from ba_agent.agent.loop import OFF_TOPIC
+    from ba_agent.guardrails.citations import NOT_SURE
+
+    searched: list[str] = []
+
+    async def fake_search_cars(query: str) -> WebResult:
+        searched.append(query)
+        if "database" in query.lower():
+            # Ungrounded text without URLs must NOT be treated as a valid web source.
+            return WebResult(text="I cannot access your database.", urls=[])
+        return WebResult(
+            text="Honda Civic Hybrid ($30,590) and Hyundai Ioniq 5 are top picks.",
+            urls=[
+                "https://www.edmunds.com/top-rated/",
+                "https://www.caranddriver.com/rankings/",
+            ],
+        )
+
+    class _SmartStubLLM:
+        async def respond(self, prompt, tools=None, *, enable_web_search=False, timeout_s=None):
+            del tools, enable_web_search, timeout_s
+            if "current database" in prompt.lower():
+                return LLMResponse(
+                    text=(
+                        "Our database covers the Toyota RAV4 Hybrid and Nissan Leaf "
+                        "(src: examples.md), plus 60 kWh LFP pack notes."
+                    )
+                )
+            # Grounded answer from 2-URL web search that omits inline URL -> auto-cites urls[0].
+            return LLMResponse(
+                text=(
+                    "Top options include the Honda Civic Hybrid at $30,590 "
+                    "and the Hyundai Ioniq 5."
+                )
+            )
+
+    agent, poster, _ = _agent("unused", fake_search_cars)
+    agent.llm = _SmartStubLLM()
+    agent.fetch_db_context = (
+        lambda: "Stored Notion Meeting Notes:\n- kickoff (2026-11-10): Benchmarked 60 kWh LFP pack."
+    )
+
+    # 1. "best card to buy" normalizes to "best car to buy", searches web, and auto-cites urls[0].
+    agent.digest = (
+        lambda: "Participants: Ali\nTasks:\nnone\nRecent:\n"
+        "[02:58] Ali: Kba, what is the best card to buy?"
+    )
+    await agent.handle(_event("what is the best card to buy?", trigger_id="t_card_car"))
+    assert searched[-1] == "what is the best car to buy?"
+    assert "Did you mean cars" not in poster.posts[-1][0]
+    assert "https://www.edmunds.com/top-rated/" in poster.posts[-1][0]
+
+    # 2. "which beef should I buy" normalizes to "which BEV should I buy" and searches web.
+    await agent.handle(_event("which beef should I buy?", trigger_id="t_beef_bev"))
+    assert searched[-1] == "which BEV should I buy?"
+    assert "https://www.edmunds.com/top-rated/" in poster.posts[-1][0]
+
+    # 3. Genuine non-auto "credit card" and "roast beef" are refused even when echoed in Recent!
+    agent.digest = (
+        lambda: "Participants: Ali\nTasks:\nnone\nRecent:\n"
+        "[03:05] Ali: Hey BA, what credit card should I get?\n"
+        "[03:08] Ali: Hey BA, write me a recipe for roast beef"
+    )
+    await agent.handle(_event("what credit card should I get?", trigger_id="t_credit_card"))
+    assert poster.posts[-1][0] == OFF_TOPIC
+    await agent.handle(_event("write me a recipe for roast beef", trigger_id="t_roast_beef"))
+    assert poster.posts[-1][0] == OFF_TOPIC
+
+    # 4. "cars in the current database" loads DB + knowledge overview without hitting NOT_SURE.
+    await agent.handle(
+        _event(
+            "what can you tell me about the cars in the current database?",
+            trigger_id="t_db_cars",
+        )
+    )
+    assert poster.posts[-1][0] != NOT_SURE
+    assert "RAV4 Hybrid" in poster.posts[-1][0]
+
+
+
 
 

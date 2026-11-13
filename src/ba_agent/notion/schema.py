@@ -25,18 +25,25 @@ class NotionSchema:
     summary_db: str = ""
     tasks_db: str = ""
     summary_props: dict[str, Prop] = field(default_factory=dict)
+    optional_summary_props: dict[str, Prop] = field(
+        default_factory=lambda: {"chat": Prop(name="Chat Messages", type="rich_text")}
+    )
     task_props: dict[str, Prop] = field(default_factory=dict)
 
 
 def load_notion_schema(path: Path) -> NotionSchema:
     loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     databases = loaded.get("databases") or {}
+    optional_summary = _props(loaded.get("summary_optional") or {})
+    if "chat" not in optional_summary:
+        optional_summary["chat"] = Prop(name="Chat Messages", type="rich_text")
     schema = NotionSchema(
         version=str(loaded.get("version") or "2022-06-28"),
         status_default=str(loaded.get("status_default") or "Not started"),
         summary_db=str(databases.get("summary") or ""),
         tasks_db=str(databases.get("tasks") or ""),
         summary_props=_props(loaded.get("summary") or {}),
+        optional_summary_props=optional_summary,
         task_props=_props(loaded.get("tasks") or {}),
     )
     return schema
@@ -96,12 +103,15 @@ def summary_properties(
     day: date,
     summary: str,
     transcript_note: str,
+    chat_note: str | None = None,
 ) -> dict:
     props: dict = {}
     _put(props, schema.summary_props.get("title"), title)
     _put(props, schema.summary_props.get("date"), day)
     _put(props, schema.summary_props.get("summary"), summary)
     _put(props, schema.summary_props.get("transcript"), transcript_note)
+    if chat_note is not None:
+        _put(props, schema.optional_summary_props.get("chat"), chat_note)
     return props
 
 

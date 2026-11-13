@@ -93,6 +93,7 @@ _CONTINUATION_PREFIXES: tuple[tuple[str, ...], ...] = (
 )
 _ACCEPTED = (
     ("hey", "ba"),
+    ("he", "ba"),
     ("hi", "ba"),
     ("high", "ba"),
     ("okay", "ba"),

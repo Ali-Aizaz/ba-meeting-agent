@@ -34,6 +34,16 @@ class ChatMessage(BaseModel):
     is_self: bool = False
 
 
+class StoredChatMessage(BaseModel):
+    id: str
+    meeting_id: str
+    sender: str
+    start_s: float
+    wall_time: datetime
+    text: str
+    is_bot: bool = False
+
+
 class TaskRecord(BaseModel):
     task: str
     owner: str
@@ -87,3 +97,8 @@ class WebResult(BaseModel):
     @property
     def useful(self) -> bool:
         return bool(self.text.strip() or self.urls)
+
+    @property
+    def grounded(self) -> bool:
+        low = self.text.strip().lower()
+        return bool(self.urls) and "not sure" not in low

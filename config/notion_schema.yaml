@@ -10,6 +10,8 @@ summary:
   date: {name: Date, type: date}
   summary: {name: Summary, type: rich_text}
   transcript: {name: Transcript, type: rich_text}
+summary_optional:
+  chat: {name: Chat Messages, type: rich_text}
 tasks:
   task: {name: Task, type: title}
   owner: {name: Owner, type: rich_text}

@@ -28,6 +28,12 @@ _CURRENT = (
     "tax credit",
     "compare",
     "comparison",
+    "best",
+    "buy",
+    "buying",
+    "recommend",
+    "recommendation",
+    "recommendations",
     "fastest",
     "cheapest",
     "longest",
@@ -287,7 +293,17 @@ _MEETING_PATTERNS = (
         re.I,
     ),
     re.compile(r"\b(?:previous|past|last|earlier)\s+meetings?(?:'s)?\b", re.I),
-    re.compile(r"\b(?:in|from)\s+(?:notion|the\s+database|the\s+db)\b", re.I),
+    re.compile(
+        r"\b(?:in|from)\s+(?:notion|(?:the|our|my|this)\s+(?:current\s+)?"
+        r"(?:car\s+|automotive\s+|meeting\s+|tasks?\s+)?(?:database|db|knowledge\s+base))\b",
+        re.I,
+    ),
+    re.compile(
+        r"\b(?:our|my|current|notion)\s+"
+        r"(?:car\s+|automotive\s+|meeting\s+|tasks?\s+)?(?:database|db|knowledge\s+base)\b",
+        re.I,
+    ),
+    re.compile(r"\bthe\s+knowledge\s+base\b", re.I),
     re.compile(r"\b(?:summarize|summarise|recap)\b", re.I),
     re.compile(r"\b(?:add|create|assign|log|track)\b.*\btasks?\b", re.I),
     re.compile(r"\bassign\s+[a-z]+\s+to\b", re.I),
@@ -346,6 +362,44 @@ _SPECIAL_MODELS_RE = re.compile(
     r"\b(?:model\s+[3ysx]|id\.[347]|mach-e|e-tron|bz4x)\b",
     re.I,
 )
+_NON_AUTO_CARD_CONTEXT = re.compile(
+    r"\b(?:credit|debit|gift|sd|sim|microsd|id|identity|business|playing|poker|tarot|"
+    r"greeting|post|boarding|graphics|video|sound|network|wifi|memory|key|smart|loyalty|"
+    r"membership|library|report|score|yellow|red|green|rate|time|punch|flash|index|bingo|"
+    r"baseball|trading|trello|jira|kanban|notion\s+cards?)\b",
+    re.I,
+)
+_FOOD_BEEF_CONTEXT = re.compile(
+    r"\b(?:recipe|cook|cooking|roast|steak|stew|burger|meat|dinner|lunch|eat|food|"
+    r"grill|braise|jerky|broth|taco|noodle|soup|salad|sauce|dish)\b",
+    re.I,
+)
+_AUTO_BEEF_CUE = re.compile(
+    r"\b(?:which\s+beef|best\s+beef|buy\s+a?\s*beef|beef\s+should\s+i\s+buy|"
+    r"beef\s+vs|vs\.?\s+beef|phev|hev|hybrid|electric|battery|range|charging|"
+    r"car|cars|vehicle|vehicles|suv)\b",
+    re.I,
+)
+_DB_OVERVIEW_CUE = re.compile(r"\b(?:database|db|knowledge\s+base)\b", re.I)
+
+
+def normalize_asr_query(query: str) -> str:
+    """Normalize common automotive speech-to-text homophones ('card' -> 'car', 'beef' -> 'BEV')."""
+    text = query
+    if re.search(r"\bcards?\b", text, re.I) and _NON_AUTO_CARD_CONTEXT.search(text) is None:
+        text = re.sub(r"\bcards\b", "cars", text, flags=re.I)
+        text = re.sub(r"\bcard\b", "car", text, flags=re.I)
+    if (
+        re.search(r"\bbeef\b", text, re.I)
+        and _FOOD_BEEF_CONTEXT.search(text) is None
+        and _AUTO_BEEF_CUE.search(text) is not None
+    ):
+        text = re.sub(r"\bbeef\b", "BEV", text, flags=re.I)
+    return text
+
+
+def is_database_overview_query(query: str) -> bool:
+    return _DB_OVERVIEW_CUE.search(query) is not None and is_meeting_question(query)
 
 
 def _has_model_or_brand(text: str) -> bool:

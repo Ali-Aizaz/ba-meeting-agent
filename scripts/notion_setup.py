@@ -34,6 +34,7 @@ def main() -> None:
                 "Date": {"date": {}},
                 "Summary": {"rich_text": {}},
                 "Transcript": {"rich_text": {}},
+                "Chat Messages": {"rich_text": {}},
             },
         )
         tasks = _database(

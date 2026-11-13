@@ -6,5 +6,5 @@ Focus on:
 
 Constraints:
 - Plain text only: no heading, no "Summary:" prefix, no Markdown, and no task bullet list (tasks are appended separately).
-- Ignore greetings, audio checks, and "Hey BA" / "TechSol BA" commands or bot chatter.
+- Ignore greetings, audio checks, wake-word boilerplate ("Hey BA", consent/save notices), and repeated retries, while including substantive technical answers or decisions shared in speech or Live Chat.
 - Never invent or assume facts, numbers, or decisions. If the transcript is empty or contains no substantive discussion, output only: No substantive discussion or decisions were recorded in this meeting.

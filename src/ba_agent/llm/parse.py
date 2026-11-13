@@ -7,8 +7,10 @@ import json
 from ba_agent.models import FunctionCall, LLMResponse, WebCitation
 
 SEARCH_INSTRUCTION = (
-    "Reply in 1-3 concise plain-text sentences with exact public car specs or prices "
-    "and full https:// source URLs. No Markdown or filler; if unverified, say not sure."
+    "Always use web_search first. Reply in 1-3 concise plain-text sentences with verified "
+    "automotive facts, examples, or prices and full https:// source URLs. For broad brand, "
+    "engine, or buying questions, summarize well-known current models/engines with concrete "
+    "examples and https:// URLs instead of refusing. No Markdown; if unverified, say not sure."
 )
 
 

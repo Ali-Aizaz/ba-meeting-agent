@@ -307,6 +307,54 @@ class KnowledgeIndex:
         ranked.sort(key=lambda item: (-item.score, item.file))
         return ranked[:limit]
 
+    def overview_chunks(self, query: str = "", limit: int = 5) -> list[Chunk]:
+        if not self._chunks:
+            return []
+        scrubbed = re.sub(
+            r"\b(?:current|our|my|this|notion|database|db|knowledge|base|stored|saved|record|records)\b",
+            " ",
+            query,
+            flags=re.I,
+        )
+        chosen: list[Chunk] = list(self.search(scrubbed, limit=limit))
+        seen = {item.source for item in chosen}
+        preferred_files = (
+            "examples.md",
+            "hybrid.md",
+            "ev.md",
+            "safety.md",
+            "body-and-chassis.md",
+        )
+        ordered = sorted(
+            self._chunks,
+            key=lambda ch: (
+                preferred_files.index(ch.file)
+                if ch.file in preferred_files
+                else len(preferred_files),
+                ch.file,
+            ),
+        )
+        seen_files = {item.file for item in chosen}
+        for pass_idx in (0, 1):
+            for chunk in ordered:
+                if len(chosen) >= limit:
+                    return chosen[:limit]
+                if chunk.source in seen:
+                    continue
+                if pass_idx == 0 and chunk.file in seen_files:
+                    continue
+                chosen.append(
+                    Chunk(
+                        file=chunk.file,
+                        heading=chunk.heading,
+                        text=chunk.text,
+                        score=max(self.min_score, 0.55),
+                    )
+                )
+                seen.add(chunk.source)
+                seen_files.add(chunk.file)
+        return chosen[:limit]
+
 
 def _bm25_score(
     q_set: set[str],

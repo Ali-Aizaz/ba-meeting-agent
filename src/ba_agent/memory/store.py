@@ -10,7 +10,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from ba_agent.captions.clock import format_meeting_time
-from ba_agent.models import CaptionLine, TaskRecord
+from ba_agent.models import CaptionLine, StoredChatMessage, TaskRecord
 
 _MEET_CODE_RE = re.compile(
     r"^https://meet\.google\.com/(?:_?meet/)?([a-z]{3}-[a-z]{4}-[a-z]{3})(?:$|[/?#])",
@@ -70,6 +70,15 @@ class MeetingStore:
                 text TEXT NOT NULL,
                 wall_time TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id TEXT PRIMARY KEY,
+                meeting_id TEXT NOT NULL,
+                sender TEXT NOT NULL,
+                start_s REAL NOT NULL,
+                wall_time TEXT NOT NULL,
+                text TEXT NOT NULL,
+                is_bot INTEGER NOT NULL DEFAULT 0
+            );
             CREATE TABLE IF NOT EXISTS meta (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -80,6 +89,8 @@ class MeetingStore:
                 ON captions (wall_time DESC, start_s DESC);
             CREATE INDEX IF NOT EXISTS idx_replies_meeting
                 ON replies (meeting_id, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_chat_messages_meeting_start
+                ON chat_messages (meeting_id, start_s ASC, id ASC);
             """
         )
         self._conn.commit()
@@ -222,7 +233,60 @@ class MeetingStore:
                 for r in reversed(rows)
             ]
             sections.append("Previous Local Meeting Captions:\n" + "\n".join(past_lines))
+        with self._lock:
+            chat_rows = self._conn.execute(
+                """
+                SELECT * FROM chat_messages WHERE meeting_id != ?
+                ORDER BY wall_time DESC, start_s DESC, id DESC LIMIT ?
+                """,
+                (self.meeting_id, max_captions),
+            ).fetchall()
+        if chat_rows:
+            past_chats = [
+                f"{format_meeting_time(r['start_s'])} {r['sender']}: {r['text']}"
+                for r in reversed(chat_rows)
+            ]
+            sections.append("Previous Local Chat Messages:\n" + "\n".join(past_chats))
         return "\n".join(sections)
+
+    def add_chat_message(self, msg: StoredChatMessage) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO chat_messages
+                (id, meeting_id, sender, start_s, wall_time, text, is_bot)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    msg.id,
+                    msg.meeting_id,
+                    msg.sender,
+                    msg.start_s,
+                    msg.wall_time.isoformat(),
+                    msg.text,
+                    1 if msg.is_bot else 0,
+                ),
+            )
+            self._conn.commit()
+
+    def chat_messages(self, limit: int = 10000) -> list[StoredChatMessage]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT * FROM chat_messages WHERE meeting_id = ?
+                ORDER BY start_s DESC, wall_time DESC, id DESC LIMIT ?
+                """,
+                (self.meeting_id, limit),
+            ).fetchall()
+        return [_chat_message(row) for row in reversed(rows)]
+
+    def count_chat_messages(self) -> int:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM chat_messages WHERE meeting_id = ?",
+                (self.meeting_id,),
+            ).fetchone()
+        return int(row["n"])
 
     def add_reply(self, text: str, wall_time: datetime | None = None) -> None:
         moment = wall_time or datetime.now().astimezone()
@@ -355,6 +419,18 @@ def _caption(row: sqlite3.Row) -> CaptionLine:
         end_s=row["end_s"],
         wall_time=datetime.fromisoformat(row["wall_time"]),
         text=row["text"],
+    )
+
+
+def _chat_message(row: sqlite3.Row) -> StoredChatMessage:
+    return StoredChatMessage(
+        id=row["id"],
+        meeting_id=row["meeting_id"],
+        sender=row["sender"],
+        start_s=row["start_s"],
+        wall_time=datetime.fromisoformat(row["wall_time"]),
+        text=row["text"],
+        is_bot=bool(row["is_bot"]),
     )
 
 

@@ -18,11 +18,19 @@ from ba_agent.captions.stabilize import Stabilizer
 from ba_agent.config import Settings, ensure_ready, read_prompt, resolve_path
 from ba_agent.events import EventBus
 from ba_agent.guardrails.search import query_allowed, strip_meeting_text
+from ba_agent.knowledge.policy import normalize_asr_query
 from ba_agent.knowledge.search import KnowledgeIndex
 from ba_agent.llm import build_llm
 from ba_agent.logging_setup import configure_logging, set_meeting_id
 from ba_agent.memory.store import MeetingStore, _canonical_url, open_meeting
-from ba_agent.models import CaptionLine, PostReason, TaskRecord, TriggerEvent, WebResult
+from ba_agent.models import (
+    CaptionLine,
+    PostReason,
+    StoredChatMessage,
+    TaskRecord,
+    TriggerEvent,
+    WebResult,
+)
 from ba_agent.notion.client import NotionService, TaskWrite
 from ba_agent.notion.messages import notes_saved, task_failed
 from ba_agent.notion.schema import load_notion_schema
@@ -58,20 +66,46 @@ class SessionPoster:
         adapter: GoogleMeetAdapter,
         gate: OutputGate,
         store: MeetingStore | None = None,
+        *,
+        bot_name: str = "TechSol BA",
+        on_change=None,
     ) -> None:
         self.adapter = adapter
         self.gate = gate
         self.store = store
+        self.bot_name = bot_name
+        self.on_change = on_change
 
     async def post(self, text: str, reason: PostReason, trigger_id: str | None = None) -> bool:
         if not self.gate.allow(reason, trigger_id):
             return False
         posted = await self.adapter.post_chat(text, reason)
-        if posted and self.store is not None and reason in {
-            PostReason.REPLY,
-            PostReason.CONFIRMATION,
-        }:
-            self.store.add_reply(text)
+        if posted and self.store is not None:
+            if reason in {
+                PostReason.REPLY,
+                PostReason.CONFIRMATION,
+            }:
+                self.store.add_reply(text)
+            now_s = 0.0
+            meeting_seconds = getattr(self.adapter, "meeting_seconds", None)
+            if callable(meeting_seconds):
+                try:
+                    now_s = max(0.0, float(meeting_seconds()))
+                except Exception:
+                    now_s = 0.0
+            self.store.add_chat_message(
+                StoredChatMessage(
+                    id=uuid.uuid4().hex,
+                    meeting_id=self.store.meeting_id,
+                    sender=self.bot_name,
+                    start_s=now_s,
+                    wall_time=datetime.now(UTC),
+                    text=text.strip(),
+                    is_bot=True,
+                )
+            )
+            if self.on_change is not None and reason is not PostReason.MEETING_SAVED:
+                self.on_change()
         return posted
 
 
@@ -201,7 +235,14 @@ async def _run_single_meeting(
     status.stage = "joining"
     status.last_error = ""
     notion = _build_notion(settings, store)
-    poster = SessionPoster(adapter, OutputGate(), store)
+    notes_dirty = asyncio.Event()
+    poster = SessionPoster(
+        adapter,
+        OutputGate(),
+        store,
+        bot_name=settings.meeting.bot_name,
+        on_change=notes_dirty.set,
+    )
     llm = None
     joined = False
     store_closed = False
@@ -256,13 +297,15 @@ async def _run_single_meeting(
         addressed_caption_ids: set[str] = set()
 
         async def guarded_search(query: str) -> WebResult:
-            cleaned_query = " ".join(query.split()).lower()
+            cleaned_query = " ".join(query.split()).lower().strip(".,!?;:")
             lines = [
                 line.text
                 for line in store.last(500)
                 if line.id not in addressed_caption_ids
                 and not is_addressed_line(line.text)
-                and " ".join(line.text.split()).lower() != cleaned_query
+                and " ".join(line.text.split()).lower().strip(".,!?;:") != cleaned_query
+                and normalize_asr_query(" ".join(line.text.split())).lower().strip(".,!?;:")
+                != cleaned_query
             ]
             people = store.participants()
             if not query_allowed(query, lines, people):
@@ -272,8 +315,6 @@ async def _run_single_meeting(
                     return WebResult()
                 query = cleaned
             return await llm.search_cars(query)
-
-        notes_dirty = asyncio.Event()
 
         async def create_task(record: TaskRecord):
             if notion is None or not notion.schema.tasks_db:
@@ -422,8 +463,15 @@ async def _run_single_meeting(
             await asyncio.gather(*warm_tasks, return_exceptions=True)
         status.stage = "leaving"
         switching = next_url_event is not None and next_url_event.is_set()
-        has_data = joined or store.count_captions() > 0 or len(store.tasks()) > 0
-        current_sig = f"{store.count_captions()}:{len(store.tasks())}"
+        has_data = (
+            joined
+            or store.count_captions() > 0
+            or len(store.tasks()) > 0
+            or store.count_chat_messages() > 0
+        )
+        current_sig = (
+            f"{store.count_captions()}:{len(store.tasks())}:{store.count_chat_messages()}"
+        )
         needs_final_save = bool(
             llm is not None
             and has_data
@@ -437,6 +485,7 @@ async def _run_single_meeting(
             # can join the new meeting without waiting 15-35s for LLM + Notion.
             lines_snapshot = store.last(100000)
             tasks_snapshot = store.tasks()
+            chats_snapshot = store.chat_messages(100000)
             store.set_meta("saved", "1")
             store.set_meta("saved_sig", current_sig)
             store.set_meta("closed", "1")
@@ -450,6 +499,7 @@ async def _run_single_meeting(
                     llm,
                     lines_snapshot,
                     tasks_snapshot,
+                    chats_snapshot,
                 )
             )
             background_saves.add(bg_task)
@@ -570,6 +620,25 @@ async def _loops(
             if not text or text.startswith(settings.meeting.consent_message):
                 continue
             now = adapter.meeting_seconds()
+            msg_wall_time = getattr(message, "wall_time", None) or datetime.now(UTC)
+            recent_chats = store.chat_messages(limit=5)
+            if not any(
+                c.sender == speaker and c.text == text and abs(now - c.start_s) <= 3.0
+                for c in recent_chats
+            ):
+                store.add_chat_message(
+                    StoredChatMessage(
+                        id=uuid.uuid4().hex,
+                        meeting_id=store.meeting_id,
+                        sender=speaker,
+                        start_s=max(0.0, float(now)),
+                        wall_time=msg_wall_time,
+                        text=text,
+                        is_bot=False,
+                    )
+                )
+                if notes_dirty is not None:
+                    notes_dirty.set()
             line = CaptionLine(
                 id=uuid.uuid4().hex,
                 meeting_id=store.meeting_id,
@@ -731,12 +800,42 @@ async def _loops(
             await asyncio.gather(*pending, return_exceptions=True)
 
 
+def _format_chat_log(chat_msgs: list[StoredChatMessage]) -> str:
+    return "\n".join(
+        f"{format_meeting_time(msg.start_s)} {msg.sender}: {msg.text}" for msg in chat_msgs
+    )
+
+
+def _combined_summary_input(transcript: str, chat_log: str) -> str:
+    t_clean = transcript.strip()
+    c_clean = chat_log.strip()
+    if t_clean and c_clean:
+        return f"{t_clean}\n\nLive Chat:\n{c_clean}"
+    return t_clean or c_clean
+
+
+async def _call_save_meeting(
+    notion: NotionService,
+    summary: str,
+    transcript: str,
+    tasks: list[TaskRecord],
+    *,
+    chat_log: str = "",
+    append_children: bool = True,
+) -> str:
+    kwargs: dict = {"append_children": append_children}
+    if _supports_kwarg(notion.save_meeting, "chat_log"):
+        kwargs["chat_log"] = chat_log
+    return await notion.save_meeting(summary, transcript, tasks, **kwargs)
+
+
 async def _save_snapshot_and_close_notion(
     settings,
     notion: NotionService | None,
     llm,
     lines: list[CaptionLine],
     tasks: list[TaskRecord],
+    chat_msgs: list[StoredChatMessage] | None = None,
 ) -> None:
     try:
         if notion is None or not notion.schema.summary_db or llm is None:
@@ -745,8 +844,20 @@ async def _save_snapshot_and_close_notion(
             f"{format_meeting_time(line.start_s)} {line.speaker}: {line.text}"
             for line in lines
         )
-        summary = await _summarize(llm, transcript, settings.llm.summary_timeout_s)
-        await notion.save_meeting(summary, transcript, tasks, append_children=True)
+        chat_log = _format_chat_log(chat_msgs or [])
+        summary = await _summarize(
+            llm,
+            _combined_summary_input(transcript, chat_log),
+            settings.llm.summary_timeout_s,
+        )
+        await _call_save_meeting(
+            notion,
+            summary,
+            transcript,
+            tasks,
+            chat_log=chat_log,
+            append_children=True,
+        )
     except Exception:
         logger.exception("background final save failed")
     finally:
@@ -767,13 +878,22 @@ async def _save_live(store: MeetingStore, notion: NotionService) -> str:
         return ""
     lines = store.last(1500)
     tasks = store.tasks()
-    if not lines and not tasks:
+    chat_msgs = store.chat_messages(1500)
+    if not lines and not tasks and not chat_msgs:
         return notion.summary_url
     transcript = "\n".join(
         f"{format_meeting_time(line.start_s)} {line.speaker}: {line.text}" for line in lines
     )
-    summary = _fallback_summary(transcript)
-    url = await notion.save_meeting(summary, transcript, tasks, append_children=False)
+    chat_log = _format_chat_log(chat_msgs)
+    summary = _fallback_summary(_combined_summary_input(transcript, chat_log))
+    url = await _call_save_meeting(
+        notion,
+        summary,
+        transcript,
+        tasks,
+        chat_log=chat_log,
+        append_children=False,
+    )
     store.set_meta("summary_page_id", notion.summary_page_id)
     store.set_meta("summary_url", url)
     return url
@@ -784,18 +904,32 @@ async def _save(settings, store, notion, llm, *, announce: bool, poster: Session
         return ""
     lines = store.last(100000)
     tasks = store.tasks()
+    chat_msgs = store.chat_messages(100000)
     transcript = "\n".join(
         f"{format_meeting_time(line.start_s)} {line.speaker}: {line.text}" for line in lines
     )
-    summary = await _summarize(llm, transcript, settings.llm.summary_timeout_s)
-    url = await notion.save_meeting(summary, transcript, tasks, append_children=True)
+    chat_log = _format_chat_log(chat_msgs)
+    summary = await _summarize(
+        llm,
+        _combined_summary_input(transcript, chat_log),
+        settings.llm.summary_timeout_s,
+    )
+    url = await _call_save_meeting(
+        notion,
+        summary,
+        transcript,
+        tasks,
+        chat_log=chat_log,
+        append_children=True,
+    )
     store.set_meta("summary_page_id", notion.summary_page_id)
     store.set_meta("summary_url", url)
     store.set_meta("saved", "1")
-    store.set_meta("saved_sig", f"{len(lines)}:{len(tasks)}")
+    store.set_meta("saved_sig", f"{len(lines)}:{len(tasks)}:{store.count_chat_messages()}")
     if announce and url and store.get_meta("save_announced") != "1":
         await poster.post(notes_saved(url), PostReason.MEETING_SAVED)
         store.set_meta("save_announced", "1")
+        store.set_meta("saved_sig", f"{len(lines)}:{len(tasks)}:{store.count_chat_messages()}")
     return url
 
 

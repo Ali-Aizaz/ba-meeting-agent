@@ -277,7 +277,7 @@ class OpenAIResponsesClient:
                 urls=dedup_urls,
                 queries=response.search_queries or [query],
             )
-            if result.useful:
+            if result.grounded:
                 self._cache_web_result(cache_key, result)
                 return result
         except Exception:

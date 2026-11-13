@@ -649,4 +649,69 @@ async def test_google_login_rejection_aborts_immediately_Even_with_stale_cookies
     assert adapter._google_login_blocked is True
 
 
+def test_stabilizer_ignores_dom_remount_replay_and_preserves_new_tail() -> None:
+    from ba_agent.captions.stabilize import CaptionRow
+
+    stab = Stabilizer(stable_ms=800)
+    q1 = "a Ba can you tell me about the Suzuki engine."
+    q2 = "Kba, what is the best card to buy?"
+    q3 = "Hey, BA, what can you tell me about the cars in the current database?"
+
+    committed = []
+    committed += stab.push_frame([CaptionRow("5", "Ali", q1)], 161.0)
+    committed += stab.push_frame([CaptionRow("5", "Ali", q1)], 162.0)
+    committed += stab.push_frame([CaptionRow("5", "Ali", q1), CaptionRow("6", "Ali", q2)], 178.0)
+    committed += stab.push_frame([CaptionRow("5", "Ali", q1), CaptionRow("6", "Ali", q2)], 179.0)
+    committed += stab.push_frame(
+        [CaptionRow("5", "Ali", q1), CaptionRow("6", "Ali", q2), CaptionRow("7", "Ali", q3)],
+        215.0,
+    )
+    committed += stab.push_frame(
+        [CaptionRow("5", "Ali", q1), CaptionRow("6", "Ali", q2), CaptionRow("7", "Ali", q3)],
+        216.0,
+    )
+    assert [c.text for c in committed] == [q1, q2, q3]
+
+    # Google Meet re-mounts the caption container twice with brand-new row IDs for the same blocks.
+    replay1 = stab.push_frame(
+        [CaptionRow("12", "Ali", q1), CaptionRow("13", "Ali", q2), CaptionRow("14", "Ali", q3)],
+        239.0,
+    )
+    replay1 += stab.push_frame(
+        [CaptionRow("12", "Ali", q1), CaptionRow("13", "Ali", q2), CaptionRow("14", "Ali", q3)],
+        240.0,
+    )
+    replay2 = stab.push_frame(
+        [CaptionRow("15", "Ali", q1), CaptionRow("16", "Ali", q2), CaptionRow("17", "Ali", q3)],
+        240.5,
+    )
+    replay2 += stab.push_frame(
+        [CaptionRow("15", "Ali", q1), CaptionRow("16", "Ali", q2), CaptionRow("17", "Ali", q3)],
+        241.5,
+    )
+    assert replay1 == []
+    assert replay2 == []
+
+    # When Ali speaks a new sentence into re-mounted row "17", only the new sentence commits.
+    extended = f"{q3} Hey BA, summarize."
+    tail = stab.push_frame(
+        [
+            CaptionRow("15", "Ali", q1),
+            CaptionRow("16", "Ali", q2),
+            CaptionRow("17", "Ali", extended),
+        ],
+        243.0,
+    )
+    tail += stab.push_frame(
+        [
+            CaptionRow("15", "Ali", q1),
+            CaptionRow("16", "Ali", q2),
+            CaptionRow("17", "Ali", extended),
+        ],
+        244.0,
+    )
+    assert [c.text for c in tail] == ["Hey BA, summarize."]
+
+
+
 

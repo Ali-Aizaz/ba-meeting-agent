@@ -92,6 +92,9 @@ class NotionService:
         self._bg_tasks_refresh: asyncio.Task[list[TaskRecord]] | None = None
         self._bg_summaries_refresh: asyncio.Task[list[dict]] | None = None
         self._transcript_appended: bool = False
+        self._appended_chat_count: int = 0
+        self._has_chat_prop: bool = False
+        self._uses_custom_transport: bool = transport is not None
         self.task_parent: dict = {"database_id": schema.tasks_db} if schema.tasks_db else {}
         self.summary_parent: dict = {"database_id": schema.summary_db} if schema.summary_db else {}
         self._limiter = _Limiter(min_interval)
@@ -130,6 +133,25 @@ class NotionService:
         else:
             remote_tasks = set()
         require_properties(missing_properties(self.schema, remote_summary, remote_tasks))
+        chat_prop = self.schema.optional_summary_props.get("chat")
+        if self.schema.summary_db and chat_prop is not None:
+            if chat_prop.name in remote_summary:
+                self._has_chat_prop = True
+            elif not self._uses_custom_transport:
+                try:
+                    patched = await self._request(
+                        "PATCH",
+                        f"/databases/{self.schema.summary_db}",
+                        {"properties": {chat_prop.name: {"rich_text": {}}}},
+                    )
+                    patched_props = set((patched.get("properties") or {}).keys())
+                    self._has_chat_prop = chat_prop.name in patched_props or bool(patched)
+                except Exception:
+                    logger.warning(
+                        "could not auto-create Notion %r column on summary DB; using toggle block",
+                        chat_prop.name,
+                        exc_info=True,
+                    )
 
     async def ensure_summary_page(self, title: str) -> str:
         if self.summary_url:
@@ -145,6 +167,7 @@ class NotionService:
                 day=day,
                 summary="Meeting in progress…",
                 transcript_note="Waiting for captions…",
+                chat_note="Waiting for chat messages…" if self._has_chat_prop else None,
             ),
         }
         created = await self._request("POST", "/pages", payload)
@@ -269,18 +292,21 @@ class NotionService:
     def _parse_summary_page(self, page: dict) -> dict | None:
         props = page.get("properties") or {}
         s_props = self.schema.summary_props
+        opt_props = self.schema.optional_summary_props
         title_name = s_props["title"].name if "title" in s_props else "Title"
         date_name = s_props["date"].name if "date" in s_props else "Date"
         summary_name = s_props["summary"].name if "summary" in s_props else "Summary"
         transcript_name = s_props["transcript"].name if "transcript" in s_props else "Transcript"
+        chat_name = opt_props["chat"].name if "chat" in opt_props else "Chat Messages"
 
         title = plain_property(props.get(title_name) or {}).strip()
         day_raw = plain_property(props.get(date_name) or {}).strip()
         summary = plain_property(props.get(summary_name) or {}).strip()
         transcript = plain_property(props.get(transcript_name) or {}).strip()
+        chat = plain_property(props.get(chat_name) or {}).strip()
         page_id = str(page.get("id") or "")
         url = str(page.get("url") or "")
-        if not title and not summary and not transcript:
+        if not title and not summary and not transcript and not chat:
             return None
         return {
             "id": page_id,
@@ -289,6 +315,7 @@ class NotionService:
             "date": day_raw,
             "summary": summary,
             "transcript": transcript,
+            "chat": chat,
         }
 
     async def find_task(self, key: str, *, refresh: bool = False) -> str | None:
@@ -392,9 +419,14 @@ class NotionService:
                     parsed["id"] == self.summary_page_id
                     and parsed["summary"] in {"", "Meeting in progress…"}
                     and parsed["transcript"] in {"", "Waiting for captions…"}
+                    and parsed.get("chat", "") in {"", "Waiting for chat messages…"}
                 ):
                     continue
-                if not parsed["summary"] and not parsed["transcript"]:
+                if (
+                    not parsed["summary"]
+                    and not parsed["transcript"]
+                    and not parsed.get("chat", "")
+                ):
                     continue
                 summaries.append(parsed)
                 if len(summaries) >= fetch_limit:
@@ -441,11 +473,19 @@ class NotionService:
                 header = f"{item['title']} ({item['date']})" if item["date"] else item["title"]
                 summary_clean = " ".join(item["summary"].split())
                 transcript_clean = " ".join(item["transcript"].split())
+                chat_clean = " ".join((item.get("chat") or "").split())
                 if len(transcript_clean) > 1200:
                     transcript_clean = transcript_clean[:1200] + "…"
+                if len(chat_clean) > 800:
+                    chat_clean = chat_clean[:800] + "…"
                 entry = f"- {header}: {summary_clean}"
                 if transcript_clean and transcript_clean != "Waiting for captions…":
                     entry += f" | Transcript: {transcript_clean}"
+                if chat_clean and chat_clean not in {
+                    "Waiting for chat messages…",
+                    "No chat messages.",
+                }:
+                    entry += f" | Chat: {chat_clean}"
                 s_lines.append(entry)
             sections.append("Stored Notion Meeting Notes:\n" + "\n".join(s_lines))
         return "\n".join(sections)
@@ -459,6 +499,7 @@ class NotionService:
         day: date,
         summary_text: str,
         note: str,
+        chat_note: str = "",
     ) -> None:
         if not page_id:
             return
@@ -469,6 +510,7 @@ class NotionService:
             "date": day.isoformat(),
             "summary": summary_text,
             "transcript": note or "",
+            "chat": chat_note or "",
         }
         updated = [item for item in self._summaries_cache if item.get("id") != page_id]
         self._summaries_cache = [entry, *updated]
@@ -480,6 +522,7 @@ class NotionService:
         transcript: str,
         tasks: list[TaskRecord],
         *,
+        chat_log: str = "",
         append_children: bool = True,
     ) -> str:
         if not self.schema.summary_db:
@@ -491,14 +534,27 @@ class NotionService:
         if task_lines:
             summary_text = f"{summary_text}\n\nTasks:\n{task_lines}".strip()
         note = transcript if len(transcript) <= 1800 else transcript[:1800] + "…"
+        raw_chat = chat_log.strip()
+        chat_lines = [ln for ln in raw_chat.splitlines() if ln.strip()]
+        chat_note: str | None = None
+        if self._has_chat_prop:
+            if raw_chat:
+                chat_note = raw_chat if len(raw_chat) <= 1800 else raw_chat[:1800] + "…"
+            else:
+                chat_note = "No chat messages."
         properties = summary_properties(
             self.schema,
             title=title,
             day=day,
             summary=summary_text,
             transcript_note=note or "Transcript is in the toggle.",
+            chat_note=chat_note,
         )
         children = _transcript_toggle(transcript)
+        if chat_lines:
+            children.extend(
+                _text_toggle("Chat Messages", raw_chat, empty_label="(no chat messages)")
+            )
         if not self.summary_page_id:
             payload: dict = {"parent": self.summary_parent, "properties": properties}
             if append_children:
@@ -508,6 +564,7 @@ class NotionService:
             self.summary_url = created.get("url", "")
             if append_children:
                 self._transcript_appended = True
+                self._appended_chat_count = len(chat_lines)
                 if self._summaries_loaded_at > 0:
                     self._upsert_summary_cache(
                         page_id=self.summary_page_id,
@@ -516,6 +573,7 @@ class NotionService:
                         day=day,
                         summary_text=summary_text,
                         note=note,
+                        chat_note=chat_note or raw_chat[:1800],
                     )
             return self.summary_url
         await self._request(
@@ -530,6 +588,20 @@ class NotionService:
                 {"children": children},
             )
             self._transcript_appended = True
+            self._appended_chat_count = len(chat_lines)
+        elif append_children and len(chat_lines) > self._appended_chat_count:
+            new_chat = "\n".join(chat_lines[self._appended_chat_count :])
+            label = (
+                "Chat Messages"
+                if self._appended_chat_count == 0
+                else "Chat Messages (continued)"
+            )
+            await self._request(
+                "PATCH",
+                f"/blocks/{self.summary_page_id}/children",
+                {"children": _text_toggle(label, new_chat, empty_label="(no chat messages)")},
+            )
+            self._appended_chat_count = len(chat_lines)
         if append_children and self._summaries_loaded_at > 0:
             self._upsert_summary_cache(
                 page_id=self.summary_page_id,
@@ -538,6 +610,7 @@ class NotionService:
                 day=day,
                 summary_text=summary_text,
                 note=note,
+                chat_note=chat_note or raw_chat[:1800],
             )
         return self.summary_url
 
@@ -584,7 +657,11 @@ def _parent(database: dict, database_id: str) -> dict:
 
 
 def _transcript_toggle(transcript: str) -> list[dict]:
-    lines = transcript.splitlines() or ["(no transcript)"]
+    return _text_toggle("Transcript", transcript, empty_label="(no transcript)")
+
+
+def _text_toggle(heading: str, content: str, *, empty_label: str) -> list[dict]:
+    lines = content.splitlines() or [empty_label]
     if len(lines) <= 80:
         children = [_paragraph(line) for line in lines]
     else:
@@ -616,7 +693,7 @@ def _transcript_toggle(transcript: str) -> list[dict]:
             "object": "block",
             "type": "toggle",
             "toggle": {
-                "rich_text": [{"type": "text", "text": {"content": "Transcript"}}],
+                "rich_text": [{"type": "text", "text": {"content": heading}}],
                 "children": children,
             },
         }

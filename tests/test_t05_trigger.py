@@ -230,5 +230,56 @@ def test_chat_direct_prefixes_and_at_mentions() -> None:
     assert detector.on_line("Ali", "the BA team will review this", "speech", 15.0) == []
 
 
+def test_incomplete_speech_openers_merge_and_interleaved_replay_storm_dedups() -> None:
+    detector = TriggerDetector(pause_wait_s=5, dedup_window_s=3, followup_window_s=20)
+
+    # 1. "He BA" ASR variant matches wake phrase.
+    he_ba = detector.on_line(
+        "Ali", "He BA, can you tell me about a hybrid vehicle?", "speech", 62.0
+    )
+    assert len(he_ba) == 1
+    assert he_ba[0].question == "can you tell me about a hybrid vehicle"
+
+    # 2. Mid-sentence breath split holds incomplete opener and merges continuation cleanly.
+    assert detector.on_line("Ali", "a b a can you tell me about?", "speech", 102.0) == []
+    bev_ev = detector.on_line("Ali", "which beef should I buy?", "speech", 105.5)
+    assert len(bev_ev) == 1
+    assert bev_ev[0].question == "can you tell me about which beef should I buy"
+
+    assert detector.on_line("Ali", "a Ba can you tell me", "speech", 161.0) == []
+    suzuki_ev = detector.on_line("Ali", "about the Suzuki engine.", "speech", 163.0)
+    assert len(suzuki_ev) == 1
+    assert suzuki_ev[0].question == "can you tell me about the Suzuki engine"
+
+    card_ev = detector.on_line("Ali", "Kba, what is the best card to buy?", "speech", 178.0)
+    assert len(card_ev) == 1
+    db_ev = detector.on_line(
+        "Ali",
+        "Hey, BA, what can you tell me about the cars in the current database?",
+        "speech",
+        215.0,
+    )
+    assert len(db_ev) == 1
+
+    # 3. Interleaved replay storm 24-76s later produces zero duplicate triggers.
+    assert (
+        detector.on_line("Ali", "a Ba can you tell me about the Suzuki engine.", "speech", 239.0)
+        == []
+    )
+    assert (
+        detector.on_line("Ali", "Kba, what is the best card to buy?", "speech", 239.2) == []
+    )
+    assert (
+        detector.on_line(
+            "Ali",
+            "Hey, BA, what can you tell me about the cars in the current database?",
+            "speech",
+            239.4,
+        )
+        == []
+    )
+
+
+
 
 

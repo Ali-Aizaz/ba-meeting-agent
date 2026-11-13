@@ -450,4 +450,135 @@ async def test_burst_limiter_parallel_db_context_and_packed_transcript_toggle() 
     await service.aclose()
 
 
+@pytest.mark.asyncio
+async def test_t11_saves_all_chat_messages_to_property_toggle_and_db_context(tmp_path) -> None:
+    from datetime import datetime, timezone
+
+    from ba_agent.bot.output_gate import OutputGate
+    from ba_agent.config import load_settings
+    from ba_agent.memory.store import MeetingStore
+    from ba_agent.models import CaptionLine, LLMResponse, PostReason, StoredChatMessage
+    from ba_agent.session import SessionPoster, _save, _save_live
+
+    class _ChatAwareNotion(_FakeNotion):
+        def __call__(self, request: httpx.Request) -> httpx.Response:
+            if request.method == "GET" and "/databases/db_summary" in request.url.path:
+                props = [*SUMMARY_PROPS, "Chat Messages"]
+                return httpx.Response(
+                    200,
+                    json={
+                        "id": "db_summary",
+                        "properties": {p: {"type": "rich_text"} for p in props},
+                        "data_sources": [{"id": "ds_summary"}],
+                    },
+                )
+            return super().__call__(request)
+
+    fake = _ChatAwareNotion()
+    service = _service(fake)
+    await service.verify()
+    assert service._has_chat_prop is True
+    await service.ensure_summary_page("TechSol BA m1")
+
+    store = MeetingStore(tmp_path / "chat_meeting.db", "m1")
+
+    class _FakeAdapter:
+        def __init__(self) -> None:
+            self.sent: list[tuple[str, PostReason]] = []
+            self._t = 2.0
+
+        def meeting_seconds(self) -> float:
+            self._t += 5.0
+            return self._t
+
+        async def post_chat(self, text: str, reason: PostReason) -> bool:
+            self.sent.append((text, reason))
+            return True
+
+    adapter = _FakeAdapter()
+    dirty_calls: list[int] = []
+    poster = SessionPoster(
+        adapter,  # type: ignore[arg-type]
+        OutputGate(),
+        store,
+        bot_name="TechSol BA",
+        on_change=lambda: dirty_calls.append(1),
+    )
+
+    await poster.post("Hi — I'm the TechSol BA.", PostReason.CONSENT)
+    store.add_caption(
+        CaptionLine(
+            id="c1",
+            meeting_id="m1",
+            speaker="Ali",
+            speaker_raw="Ali",
+            start_s=10.0,
+            end_s=11.0,
+            wall_time=datetime(2026, 11, 13, 10, 0, tzinfo=timezone.utc),
+            text="We agreed on the 60 kWh pack.",
+        )
+    )
+    store.add_chat_message(
+        StoredChatMessage(
+            id="m_user_1",
+            meeting_id="m1",
+            sender="Ali",
+            start_s=12.0,
+            wall_time=datetime(2026, 11, 13, 10, 0, 12, tzinfo=timezone.utc),
+            text="Hey BA, what is a hybrid?",
+            is_bot=False,
+        )
+    )
+    await poster.post(
+        "A hybrid combines an engine and an electric motor (src: hybrid.md).",
+        PostReason.REPLY,
+        "trig_1",
+    )
+    assert len(dirty_calls) >= 2
+
+    await _save_live(store, service)
+    live_props = fake.summaries[0]["properties"]
+    assert "Hey BA, what is a hybrid?" in live_props["Chat Messages"]["rich_text"][0]["plain_text"]
+    assert "hybrid.md" in live_props["Chat Messages"]["rich_text"][0]["plain_text"]
+
+    seen_prompts: list[str] = []
+
+    class _SummaryLLM:
+        async def respond(self, prompt: str, **_kwargs) -> LLMResponse:
+            seen_prompts.append(prompt)
+            return LLMResponse(
+                text="Agreed on the 60 kWh pack and answered hybrid architecture questions in chat."
+            )
+
+    await _save(load_settings(), store, service, _SummaryLLM(), announce=True, poster=poster)
+    assert seen_prompts and "Live Chat:" in seen_prompts[0]
+    assert "A hybrid combines an engine" in seen_prompts[0]
+
+    children = fake.summaries[0].get("children") or []
+    toggle_titles = [
+        b["toggle"]["rich_text"][0]["text"]["content"]
+        for b in children
+        if b.get("type") == "toggle"
+    ]
+    assert toggle_titles == ["Transcript", "Chat Messages"]
+    chat_toggle_text = "\n".join(
+        p["paragraph"]["rich_text"][0]["text"]["content"]
+        for p in children[1]["toggle"]["children"]
+    )
+    assert "TechSol BA: Hi — I'm the TechSol BA." in chat_toggle_text
+    assert "Ali: Hey BA, what is a hybrid?" in chat_toggle_text
+    assert "TechSol BA: A hybrid combines an engine" in chat_toggle_text
+
+    # Saved meeting announce message was also recorded in local SQLite chat_messages.
+    assert any("Notes saved:" in m.text and m.is_bot for m in store.chat_messages())
+
+    ctx = await service.database_context(refresh=True)
+    assert "Chat:" in ctx
+    assert "Hey BA, what is a hybrid?" in ctx
+
+    await service.aclose()
+    store.close()
+
+
+
 
