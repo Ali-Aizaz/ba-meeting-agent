@@ -14,10 +14,18 @@ def local_tools() -> list[dict]:
         {
             "type": "function",
             "name": "search_knowledge",
-            "description": "Search the local car notes. Returns file and heading citations.",
+            "description": (
+                "Search local car engineering notes ONLY if <knowledge> does not already "
+                "contain the needed automotive concept. Returns (src: filename.md) chunks."
+            ),
             "parameters": {
                 "type": "object",
-                "properties": {"query": {"type": "string"}},
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Concise automotive concept or acronym to look up.",
+                    }
+                },
                 "required": ["query"],
                 "additionalProperties": False,
             },
@@ -26,11 +34,18 @@ def local_tools() -> list[dict]:
             "type": "function",
             "name": "search_cars",
             "description": (
-                "Search the public web for car specs, prices, comparisons, or current facts."
+                "Search the public web for car specs, prices, or comparisons ONLY if "
+                "<knowledge> and <web_results> lack the answer. Pass a standalone car-only "
+                "query; never include participant names, timestamps, URLs, or meeting text."
             ),
             "parameters": {
                 "type": "object",
-                "properties": {"query": {"type": "string"}},
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Standalone vehicle/car search query with no meeting data.",
+                    }
+                },
                 "required": ["query"],
                 "additionalProperties": False,
             },
@@ -39,15 +54,29 @@ def local_tools() -> list[dict]:
             "type": "function",
             "name": "create_task",
             "description": (
-                "Create a new Notion task when a participant asks to add or assign an action item. "
-                "Requires task, owner, and due date. Do not call this when asked to list or check existing tasks."
+                "Create a new Notion task ONLY when a participant explicitly asks to add or "
+                "assign an action item and task, owner, and due date are all known. "
+                "Never call when listing or checking existing tasks."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "task": {"type": "string"},
-                    "owner": {"type": "string"},
-                    "due": {"type": "string"},
+                    "task": {
+                        "type": "string",
+                        "description": (
+                            "Concise verb-first action phrase without owner or due date."
+                        ),
+                    },
+                    "owner": {
+                        "type": "string",
+                        "description": "Specific person's name (resolve 'me'/'I' to speaker).",
+                    },
+                    "due": {
+                        "type": "string",
+                        "description": (
+                            "Deadline (e.g., 'Friday', 'tomorrow', '28 Oct', or 'YYYY-MM-DD')."
+                        ),
+                    },
                 },
                 "required": ["task", "owner", "due"],
                 "additionalProperties": False,
@@ -56,7 +85,10 @@ def local_tools() -> list[dict]:
         {
             "type": "function",
             "name": "save_meeting",
-            "description": "Save the meeting summary and transcript to Notion.",
+            "description": (
+                "Save the meeting summary and transcript to Notion ONLY when a participant "
+                "explicitly asks to save or export the meeting notes."
+            ),
             "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
         },
     ]

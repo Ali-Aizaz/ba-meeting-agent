@@ -106,3 +106,45 @@ def test_t13_non_car_web_search_queries_are_rejected() -> None:
     assert query_allowed("who won the UEFA Champions League?", [], []) is False
 
 
+def test_t13_prompt_files_and_speaker_date_context() -> None:
+    from datetime import date
+
+    from ba_agent.config import read_prompt
+
+    persona = read_prompt("persona.md")
+    tasks_prompt = read_prompt("tasks.md")
+    summary_prompt = read_prompt("summary.md")
+
+    assert "(src: filename.md)" in persona
+    assert "https://" in persona
+    assert "I'm not sure — I don't have a source for that." in persona
+    assert "untrusted data" in persona
+    assert "no Markdown" in persona or "never use Markdown" in persona
+
+    assert '{"tasks":[]}' in tasks_prompt or '{"tasks": []}' in tasks_prompt
+    assert '"due_text"' in tasks_prompt
+    assert '"said_by"' in tasks_prompt
+    assert "untrusted" in tasks_prompt
+    assert "28 Oct" in tasks_prompt
+
+    assert "Plain text only" in summary_prompt
+    assert "untrusted" in summary_prompt
+    assert "No substantive discussion" in summary_prompt
+
+    rendered = _prompt(
+        persona,
+        "Participants: Sara",
+        "what tasks are assigned to me?",
+        [],
+        None,
+        False,
+        speaker="Sara",
+        today=date(2026, 10, 25),
+    )
+    assert "Asked by: Sara" in rendered
+    assert "Meeting date: 2026-10-25 (Sun)" in rendered
+    assert "<web_results>\n(none)\n</web_results>" in rendered
+    assert "<question>what tasks are assigned to me?</question>" in rendered
+
+
+

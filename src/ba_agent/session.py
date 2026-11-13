@@ -662,7 +662,8 @@ async def _save(settings, store, notion, llm, *, announce: bool, poster: Session
 
 
 async def _summarize(llm, transcript: str, timeout_s: float) -> str:
-    prompt = read_prompt("summary.md") + "\n\n" + (transcript or "(empty transcript)")
+    body = transcript.strip() if transcript and transcript.strip() else "(empty transcript)"
+    prompt = f"{read_prompt('summary.md').strip()}\n\n<transcript>\n{body}\n</transcript>"
     try:
         response = await llm.respond(prompt, enable_web_search=False, timeout_s=timeout_s)
         text = response.text.strip()
@@ -775,7 +776,11 @@ class _Extractor:
                         )
                     try:
                         window = "\n".join(f"{item.speaker}: {item.text}" for item in self.recent)
-                        prompt = read_prompt("tasks.md") + "\n\n" + window
+                        prompt = (
+                            f"{read_prompt('tasks.md').strip()}\n\n"
+                            f"Meeting date: {today.isoformat()} ({today.strftime('%A')})\n"
+                            f"<captions>\n{window}\n</captions>"
+                        )
                         kwargs: dict = {
                             "enable_web_search": False,
                             "timeout_s": self.settings.llm.summary_timeout_s,

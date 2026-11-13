@@ -6,7 +6,10 @@ import json
 
 from ba_agent.models import FunctionCall, LLMResponse, WebCitation
 
-SEARCH_INSTRUCTION = "Answer with public car facts and cite the source URLs."
+SEARCH_INSTRUCTION = (
+    "Reply in 1-3 concise plain-text sentences with exact public car specs or prices "
+    "and full https:// source URLs. No Markdown or filler; if unverified, say not sure."
+)
 
 
 def build_search_request(query: str, model: str) -> dict:
