@@ -19,7 +19,6 @@ from ba_agent.captions.stabilize import CaptionRow
 from ba_agent.config import StartupError, load_settings
 from ba_agent.memory.store import _canonical_url, open_meeting
 from ba_agent.models import (
-    CaptionLine,
     ChatMessage,
     FunctionCall,
     LLMResponse,
@@ -86,10 +85,21 @@ def test_transcript_toggle_caps_at_80_lines_with_overflow_notice() -> None:
     blocks = _transcript_toggle(transcript)
     assert len(blocks) == 1
     children = blocks[0]["toggle"]["children"]
-    # 80 paragraph blocks + 1 overflow paragraph = 81 children (< Notion 100-child API cap).
-    assert len(children) == 81
-    overflow_text = children[-1]["paragraph"]["rich_text"][0]["text"]["content"]
-    assert "15 more lines" in overflow_text
+    # 95 short lines pack cleanly into multiple-line paragraphs (< Notion 100-child API cap).
+    packed_text = "\n".join(c["paragraph"]["rich_text"][0]["text"]["content"] for c in children)
+    assert len(children) < 95
+    assert "Line number 94" in packed_text
+    assert "more lines" not in packed_text
+
+    # When packed paragraphs exceed 95 blocks (~170 KB), an overflow notice is appended at <= 96.
+    huge_transcript = "\n".join(
+        f"[{i:04d}] Sara: {'x' * 950} line-{i}" for i in range(120)
+    )
+    huge_children = _transcript_toggle(huge_transcript)[0]["toggle"]["children"]
+    assert len(huge_children) == 96
+    overflow_text = huge_children[-1]["paragraph"]["rich_text"][0]["text"]["content"]
+    assert "more lines" in overflow_text
+
     assert _transcript_toggle("")[0]["toggle"]["children"][0]["paragraph"]["rich_text"][0][
         "text"
     ]["content"] == "(no transcript)"
@@ -188,10 +198,10 @@ async def test_notion_service_retries_429_503_pagination_and_local_dedup() -> No
 
         # 2. list_tasks() follows cursor pagination across both pages.
         tasks = await service.list_tasks(refresh=True)
-        assert [t["task"] for t in tasks] == ["First paged task", "Second paged task"]
+        assert [t.task for t in tasks] == ["First paged task", "Second paged task"]
         assert attempts["tasks_query"] == 2
 
-        # 3. create_task() hits dedup_lookup and PATCHes page-local-hit WITHOUT querying Notion!
+        # 3. create_task() hits local _task_cache and skips both Notion query and page write!
         queries_before = attempts["tasks_query"]
         res = await service.create_task(
             TaskRecord(
@@ -204,10 +214,10 @@ async def test_notion_service_retries_429_503_pagination_and_local_dedup() -> No
         )
         assert res.created is False
         assert res.page_id == "page-local-hit"
-        assert attempts["patch_calls"] == 1
+        assert attempts["patch_calls"] == 0
         assert attempts["tasks_query"] == queries_before
     finally:
-        await service.close()
+        await service.aclose()
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +396,7 @@ class _SessionFakeLLM:
                             {
                                 "task": "send the inverter thermal report",
                                 "owner": "Omar",
-                                "due": "tomorrow",
+                                "due_text": "tomorrow",
                             }
                         ]
                     }
@@ -397,8 +407,16 @@ class _SessionFakeLLM:
             return LLMResponse(
                 text="## Summary\nReviewed regenerative braking, BOM, and inverter thermal tasks.",
             )
-        # Explicit @ba create_task command
-        if tools and "review the pack BOM" in input and not self._task_tool_used:
+        # Regenerative braking question answered with local ev.md citation
+        if "<question>what is regenerative braking" in input.lower():
+            return LLMResponse(
+                text=(
+                    "Regenerative braking uses the electric motor as a generator during "
+                    "deceleration to recover energy into the battery (src: ev.md)."
+                ),
+            )
+        # Explicit @ba create_task fallback if routed through LLM tools
+        if tools and not self._task_tool_used:
             self._task_tool_used = True
             return LLMResponse(
                 function_calls=[
@@ -412,15 +430,7 @@ class _SessionFakeLLM:
                     )
                 ],
             )
-        if "Tool results:" in input:
-            return LLMResponse(text="Task added: Sara — review the pack BOM.")
-        # Regenerative braking question answered with local ev.md citation
-        return LLMResponse(
-            text=(
-                "Regenerative braking uses the electric motor as a generator during "
-                "deceleration to recover energy into the battery (src: ev.md#Regenerative Braking)."
-            ),
-        )
+        return LLMResponse(text="Task added: Sara — review the pack BOM.")
 
     async def search_cars(self, _query: str) -> WebResult:
         return WebResult()
@@ -530,13 +540,28 @@ def test_cross_layer_meet_url_canonicalization_and_extension_js_syntax() -> None
     assert r"/^(?:\/_?meet)?\/([a-z]{3}-[a-z]{4}-[a-z]{3})(?:$|[/?#])/i" in worker_ts
     assert r"/^(?:\/_?meet)?\/([a-z]{3}-[a-z]{4}-[a-z]{3})(?:$|[/?#])/i" in ext_content
 
-    py_re = re.compile(r"^(?: /_?meet)?/([a-z]{3}-[a-z]{4}-[a-z]{3})(?:$|[/?#])".replace(" ", ""), re.I)
+    py_re = re.compile(
+        r"^(?:/_?meet)?/([a-z]{3}-[a-z]{4}-[a-z]{3})(?:$|[/?#])",
+        re.I,
+    )
 
     valid_cases = [
-        ("https://meet.google.com/abc-defg-hij", "https://meet.google.com/abc-defg-hij"),
-        ("https://meet.google.com/ABC-DEFG-HIJ?pli=1", "https://meet.google.com/abc-defg-hij"),
-        ("https://meet.google.com/_meet/abc-defg-hij?authuser=0", "https://meet.google.com/abc-defg-hij"),
-        ("https://meet.google.com/meet/abc-defg-hij#chat", "https://meet.google.com/abc-defg-hij"),
+        (
+            "https://meet.google.com/abc-defg-hij",
+            "https://meet.google.com/abc-defg-hij",
+        ),
+        (
+            "https://meet.google.com/ABC-DEFG-HIJ?pli=1",
+            "https://meet.google.com/abc-defg-hij",
+        ),
+        (
+            "https://meet.google.com/_meet/abc-defg-hij?authuser=0",
+            "https://meet.google.com/abc-defg-hij",
+        ),
+        (
+            "https://meet.google.com/meet/abc-defg-hij#chat",
+            "https://meet.google.com/abc-defg-hij",
+        ),
     ]
     for raw, expected in valid_cases:
         assert _canonical_url(raw) == expected

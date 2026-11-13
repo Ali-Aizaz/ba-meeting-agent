@@ -173,3 +173,43 @@ def test_t05_u10_detector_deduplicates_extended_cumulative_speech() -> None:
     )
     assert ev2 == []
 
+
+def test_bare_wake_adaptive_pause_expires_early_when_speaker_silent() -> None:
+    active = False
+    detector = TriggerDetector(
+        pause_wait_s=5.0,
+        dedup_window_s=3,
+        followup_window_s=20,
+        is_speaker_active=lambda _speaker: active,
+        fast_pause_wait_s=2.2,
+    )
+    detector.on_line("Sara", "Hey BA", "speech", 0.0, caption_id="c1")
+    # Speaker silent (no open caption row): bare wake expires shortly after 2.2s.
+    assert detector.tick(2.1) == []
+    early = detector.tick(2.25)
+    assert len(early) == 1
+    assert early[0].question == ""
+    assert early[0].followup is False
+
+    # Speaker active: bare wake waits past 2.25s up to the full 5.0s pause window.
+    active = True
+    detector.on_line("Sara", "Hey BA", "speech", 10.0, caption_id="c2")
+    assert detector.tick(12.25) == []
+    assert detector.tick(14.9) == []
+    full = detector.tick(15.05)
+    assert len(full) == 1
+    assert full[0].question == ""
+    assert full[0].followup is False
+
+    # Long preamble committed at 22.4s (utterance started at 20.0s) must not fire in 0ms at 22.4s.
+    active = False
+    assert (
+        detector.on_line("Sara", "Um okay, Hey BA", "speech", 20.0, committed_at=22.4) == []
+    )
+    assert detector.tick(22.5) == []
+    merged = detector.on_line("Sara", "what is regenerative braking?", "speech", 23.8)
+    assert len(merged) == 1
+    assert merged[0].question == "what is regenerative braking"
+
+
+

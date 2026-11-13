@@ -54,6 +54,7 @@ class TriggerEvent(BaseModel):
     caption_id: str | None = None
     t_detected: float
     followup: bool = False
+    t_committed_perf: float = 0.0
 
 
 class Citation(BaseModel):

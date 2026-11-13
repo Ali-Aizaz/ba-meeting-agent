@@ -225,7 +225,9 @@ async def test_t02_i1_fake_meet(fake_meet_url: str, tmp_path: Path, monkeypatch)
         assert await adapter.cam_is_off()
         tracks_locked_off = await adapter.page.evaluate(
             """async () => {
-              const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+              const stream = await navigator.mediaDevices.getUserMedia(
+                { audio: true, video: true }
+              );
               const tracks = stream.getTracks();
               tracks.forEach((t) => { t.enabled = true; });
               return tracks.length > 0 && tracks.every((t) => t.enabled === false);
@@ -311,3 +313,113 @@ async def _join_or_skip(settings: Settings, url: str, tmp_path: Path):
             pytest.skip(f"Chromium is not installed ({exc})")
         raise
     return adapter
+
+
+def test_stabilizer_fast_commits_question_mark_wake_only() -> None:
+    from ba_agent.captions.stabilize import CaptionRow
+
+    stab = Stabilizer(stable_ms=800)
+    assert stab.push_frame(
+        [CaptionRow("r1", "Sara", "Hey BA, what is a hybrid?")],
+        0.0,
+    ) == []
+    # 460ms >= wake_stable_ms (450ms) commits explicit ?-terminated >=3-word wake question.
+    fast_hits = stab.push_frame(
+        [CaptionRow("r1", "Sara", "Hey BA, what is a hybrid?")],
+        0.46,
+    )
+    assert len(fast_hits) == 1
+    assert fast_hits[0].text == "Hey BA, what is a hybrid?"
+
+    # Unpunctuated wake prefix waits the full 800ms so breath pauses do not split questions.
+    stab2 = Stabilizer(stable_ms=800)
+    assert stab2.push_frame([CaptionRow("r2", "Sara", "Hey BA, what is the")], 0.0) == []
+    assert stab2.push_frame([CaptionRow("r2", "Sara", "Hey BA, what is the")], 0.46) == []
+    delayed = stab2.push_frame([CaptionRow("r2", "Sara", "Hey BA, what is the")], 0.85)
+    assert len(delayed) == 1
+    assert delayed[0].text == "Hey BA, what is the"
+
+
+def test_stabilizer_leading_word_asr_revision_does_not_split_or_clobber() -> None:
+    from ba_agent.captions.stabilize import CaptionRow
+
+    stab = Stabilizer(stable_ms=800)
+    assert stab.push_frame([CaptionRow("r1", "Ali", "Think we should use LFP")], 0.0) == []
+    assert stab.push_frame([CaptionRow("r1", "Ali", "I think we should use LFP")], 0.3) == []
+    committed = stab.push_frame([CaptionRow("r1", "Ali", "I think we should use LFP")], 1.2)
+    assert len(committed) == 1
+    assert committed[0].text == "I think we should use LFP"
+
+    # A sharp length drop (10 words -> 3 words) commits the 10-word line rather than overwriting it.
+    long_line = "We agreed to validate the thermal valve inverter benchmark tomorrow"
+    assert stab.push_frame([CaptionRow("r2", "Omar", long_line)], 2.0) == []
+    split_hits = stab.push_frame([CaptionRow("r2", "Omar", "validate the thermal")], 2.4)
+    assert [hit.text for hit in split_hits] == [long_line]
+
+
+@pytest.mark.asyncio
+async def test_post_chat_opens_collapsed_drawer_when_hidden_box_exists() -> None:
+    from ba_agent.bot.google_meet.adapter import GoogleMeetAdapter
+    from ba_agent.models import PostReason
+
+    drawer_open = {"value": False}
+    sent: list[str] = []
+
+    class _FakeTarget:
+        async def is_visible(self) -> bool:
+            return drawer_open["value"]
+
+        async def is_enabled(self) -> bool:
+            return drawer_open["value"]
+
+        async def click(self, **_kwargs) -> None:
+            if not drawer_open["value"]:
+                raise RuntimeError("element is not visible")
+
+        async def fill(self, text: str, **_kwargs) -> None:
+            sent.append(text)
+
+        async def press(self, _key: str) -> None:
+            return None
+
+    class _FakeBox:
+        first = _FakeTarget()
+
+        async def count(self) -> int:
+            return 1
+
+    class _FakeOpener:
+        @property
+        def first(self):
+            return self
+
+        def or_(self, _other):
+            return self
+
+        async def count(self) -> int:
+            return 1
+
+        async def click(self, **_kwargs) -> None:
+            drawer_open["value"] = True
+
+    class _FakePage:
+        def get_by_role(self, *_args, **_kwargs):
+            return _FakeOpener()
+
+        def locator(self, *_args, **_kwargs):
+            return _FakeOpener()
+
+    adapter = GoogleMeetAdapter(_guest_settings(), profile_dir=Path("/tmp/ba-unused"))
+    adapter.page = _FakePage()  # type: ignore[assignment]
+    adapter._chat_box = lambda: _FakeBox()  # type: ignore[method-assign]
+
+    async def _noop_overlays() -> None:
+        return None
+
+    adapter._dismiss_incall_overlays = _noop_overlays  # type: ignore[method-assign]
+    ok = await adapter.post_chat("Grounded reply (src: ev.md)", PostReason.REPLY)
+    assert ok is True
+    assert drawer_open["value"] is True
+    assert sent == ["Grounded reply (src: ev.md)"]
+
+

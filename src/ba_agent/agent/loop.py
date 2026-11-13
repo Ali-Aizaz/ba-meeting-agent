@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import re
@@ -12,10 +13,19 @@ from datetime import date
 from ba_agent.agent.timing import log_timing
 from ba_agent.captions.clock import format_meeting_time
 from ba_agent.config import read_prompt
-from ba_agent.guardrails.citations import NOT_SURE, finalize_reply, has_citation, reply_status
+from ba_agent.guardrails.citations import (
+    NOT_SURE,
+    finalize_reply,
+    has_citation,
+    has_precise_number,
+    is_unsure,
+    numbers_grounded_in_context,
+    reply_status,
+    verify_reply_sources,
+)
 from ba_agent.knowledge.policy import (
+    classify_query_intent,
     has_car_topic,
-    is_car_question,
     is_meeting_question,
     should_search_web,
 )
@@ -29,6 +39,7 @@ from ba_agent.tasks_extract.extractor import (
     dedup_key,
     fallback_overheard_tasks,
     is_task_request,
+    normalize_owner,
     parse_task_command,
 )
 from ba_agent.trigger.detector import TriggerDetector
@@ -59,6 +70,8 @@ class AgentLoop:
         persona: str | None = None,
         on_activity: Callable[[str, str], None] | None = None,
         fetch_db_context: Callable[[], Awaitable[str]] | None = None,
+        participants: Callable[[], list[str]] | list[str] | None = None,
+        aliases: dict[str, str] | None = None,
     ) -> None:
         self.knowledge = knowledge
         self.search_cars = search_cars
@@ -75,10 +88,82 @@ class AgentLoop:
         self.persona = persona if persona is not None else read_prompt("persona.md")
         self.on_activity = on_activity
         self.fetch_db_context = fetch_db_context
+        self.participants = participants
+        self.aliases = aliases or {}
         self.pending_task = None
 
+    def _local_digest(self, max_tokens: int | None = None) -> str:
+        if max_tokens is not None:
+            try:
+                sig = inspect.signature(self.digest)
+                params = sig.parameters.values()
+                accepts_max = (
+                    "max_tokens" in sig.parameters
+                    or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params)
+                )
+                if accepts_max:
+                    return (self.digest(max_tokens=max_tokens) or "").strip()
+            except (TypeError, ValueError):
+                pass
+        return (self.digest() or "").strip()
+
+    def _known_participants(self, base_digest: str = "") -> list[str]:
+        people: list[str] = []
+        if callable(self.participants):
+            try:
+                people.extend(self.participants() or [])
+            except Exception:
+                pass
+        elif isinstance(self.participants, list):
+            people.extend(self.participants)
+        for line in base_digest.splitlines():
+            if line.lower().startswith("participants:"):
+                raw = line.split(":", 1)[1].strip()
+                if raw and raw.lower() != "none":
+                    for item in raw.split(","):
+                        name = item.strip()
+                        if name and name not in people:
+                            people.append(name)
+                break
+        return people
+
+    async def _safe_search_cars(self, question: str) -> WebResult | None:
+        try:
+            return await self.search_cars(question)
+        except AssertionError:
+            raise
+        except Exception:
+            logger.warning("search_cars failed; continuing with local knowledge", exc_info=True)
+            return None
+
+    async def _llm_respond(
+        self,
+        prompt: str,
+        *,
+        tools: list[dict] | None = None,
+        enable_web_search: bool = False,
+        timeout_s: float | None = None,
+        max_output_tokens: int | None = None,
+    ):
+        kwargs: dict = {
+            "tools": tools,
+            "enable_web_search": enable_web_search,
+            "timeout_s": timeout_s,
+        }
+        if max_output_tokens is not None:
+            try:
+                sig = inspect.signature(self.llm.respond)
+                params = sig.parameters.values()
+                if "max_output_tokens" in sig.parameters or any(
+                    p.kind is inspect.Parameter.VAR_KEYWORD for p in params
+                ):
+                    kwargs["max_output_tokens"] = max_output_tokens
+            except (TypeError, ValueError):
+                pass
+        return await self.llm.respond(prompt, **kwargs)
+
     async def _full_digest(self) -> str:
-        base = (self.digest() or "").strip()
+        base = self._local_digest()
         if self.fetch_db_context is None:
             return base
         try:
@@ -138,8 +223,13 @@ class AgentLoop:
                 self._emit_activity("Leaving Google Meet call…", "info")
                 await self.leave()
             posted = time.perf_counter()
+            commit_ms = (
+                max(0, int((started - event.t_committed_perf) * 1000))
+                if event.t_committed_perf > 0
+                else 0
+            )
             log_timing(
-                caption_commit_ms=0,
+                caption_commit_ms=commit_ms,
                 model_start_ms=int((model_at - started) * 1000),
                 tool_ms=int((tool_at - started) * 1000),
                 chat_posted_ms=int((posted - started) * 1000),
@@ -185,7 +275,12 @@ class AgentLoop:
         return text, reason, m_at, t_at, False
 
     async def _complete_pending(self, event: TriggerEvent, started: float):
-        record = apply_followup(self.pending_task, event.question, today=self.today())
+        record = apply_followup(
+            self.pending_task,
+            event.question,
+            today=self.today(),
+            aliases=self.aliases,
+        )
         self.pending_task = None
         if not record.owner or record.due is None:
             return STILL_NEED, PostReason.REPLY, started, started
@@ -202,6 +297,7 @@ class AgentLoop:
             said_by=event.speaker,
             time=format_meeting_time(event.t_detected),
             today=self.today(),
+            aliases=self.aliases,
         )
         if record is not None and record.task and (not record.owner or record.due is None):
             full_digest = await self._full_digest()
@@ -236,27 +332,56 @@ class AgentLoop:
         self._emit_activity(f'Searching knowledge base for "{question[:60]}"…', "working")
         hits = self.knowledge.search(question)
         web: WebResult | None = None
-        car = is_car_question(question, hits)
+        compact_local = self._local_digest(max_tokens=600)
+        participants = self._known_participants(compact_local)
+        intent = classify_query_intent(question, hits, participants)
+        car = intent in {"car", "hybrid"}
         web_needed = car and should_search_web(question, hits, self.min_score)
         tool_at = time.perf_counter()
-        if web_needed:
-            self._emit_activity(f'Searching web for "{question[:60]}"…', "working")
-            try:
-                web = await self.search_cars(question)
-            except AssertionError:
-                raise
-            except Exception:
-                logger.warning("search_cars failed; continuing with local knowledge", exc_info=True)
-                web = None
-            tool_at = time.perf_counter()
-        if not car and self.fetch_db_context is not None:
-            self._emit_activity("Fetching stored data from database…", "working")
-        full_digest = await self._full_digest()
-        if car and not hits and not (web and web.useful):
-            if _digest_has_match(question, full_digest):
-                car = False
+        digest_loaded = False
+        if intent == "car":
+            if web_needed:
+                self._emit_activity(f'Searching web for "{question[:60]}"…', "working")
+                web = await self._safe_search_cars(question)
+                tool_at = time.perf_counter()
+            if not hits and not (web and web.useful):
+                if self.fetch_db_context is not None:
+                    self._emit_activity("Fetching stored data from database…", "working")
+                full_digest = await self._full_digest()
+                digest_loaded = True
+                if _digest_has_match(question, full_digest):
+                    car = False
+                    intent = "meeting"
+                else:
+                    return NOT_SURE, PostReason.REPLY, started, tool_at
             else:
-                return NOT_SURE, PostReason.REPLY, started, tool_at
+                full_digest = compact_local
+        elif intent == "hybrid":
+            if web_needed:
+                self._emit_activity(f'Searching web & database for "{question[:60]}"…', "working")
+                web, full_digest = await asyncio.gather(
+                    self._safe_search_cars(question),
+                    self._full_digest(),
+                )
+                digest_loaded = True
+                tool_at = time.perf_counter()
+            else:
+                if self.fetch_db_context is not None:
+                    self._emit_activity("Fetching stored data from database…", "working")
+                full_digest = await self._full_digest()
+                digest_loaded = True
+            if not hits and not (web and web.useful):
+                if _digest_has_match(question, full_digest):
+                    car = False
+                    intent = "meeting"
+                else:
+                    return NOT_SURE, PostReason.REPLY, started, tool_at
+        else:
+            if self.fetch_db_context is not None:
+                self._emit_activity("Fetching stored data from database…", "working")
+            full_digest = await self._full_digest()
+            digest_loaded = True
+
         if _is_off_topic(question, full_digest, car):
             return OFF_TOPIC, PostReason.REPLY, started, tool_at
         model_at = time.perf_counter()
@@ -271,13 +396,25 @@ class AgentLoop:
             car,
             speaker=event.speaker,
             today=today_val,
+            intent=intent,
+        )
+        first_tools = (
+            None
+            if (
+                web is not None
+                and web.useful
+                and not is_task_request(question)
+                and not _is_save(question)
+            )
+            else local_tools()
         )
         try:
-            first = await self.llm.respond(
+            first = await self._llm_respond(
                 prompt,
-                tools=local_tools(),
+                tools=first_tools,
                 enable_web_search=False,
                 timeout_s=self.timeout_s,
+                max_output_tokens=450,
             )
             if first.function_calls:
                 tool_outcome, web = await self._handle_tool_calls(
@@ -285,8 +422,15 @@ class AgentLoop:
                 )
                 if tool_outcome is not None:
                     return tool_outcome
-                car = is_car_question(question, hits) or (web is not None and web.useful)
-                full_digest = await self._full_digest()
+                intent = classify_query_intent(question, hits, participants)
+                car = intent in {"car", "hybrid"} or (web is not None and web.useful)
+                if not digest_loaded and (
+                    not car
+                    or intent == "hybrid"
+                    or (not hits and not (web and web.useful))
+                ):
+                    full_digest = await self._full_digest()
+                    digest_loaded = True
                 prompt = _prompt(
                     self.persona,
                     full_digest,
@@ -296,24 +440,61 @@ class AgentLoop:
                     car,
                     speaker=event.speaker,
                     today=today_val,
+                    intent=intent,
                 )
                 self._emit_activity(
                     f"Synthesizing answer with knowledge results for {event.speaker}…",
                     "working",
                 )
-                first = await self.llm.respond(
+                first = await self._llm_respond(
                     prompt,
                     tools=None,
                     enable_web_search=False,
                     timeout_s=self.timeout_s,
+                    max_output_tokens=450,
                 )
             if not car:
                 text = _resolve_meeting_reply(first.text, question, full_digest)
                 return text, PostReason.REPLY, model_at, tool_at
+
+            allowed_files = {hit.file for hit in hits}
+            allowed_urls = set(web.urls if web else [])
+            context_parts = [hit.text for hit in hits]
+            if web is not None and web.text:
+                context_parts.append(web.text)
+            if intent == "hybrid" and full_digest:
+                context_parts.append(full_digest)
+            context_blob = "\n".join(context_parts)
+
             if reply_status(first.text) == "allow":
-                return first.text, PostReason.REPLY, model_at, tool_at
+                if is_unsure(first.text) and not has_precise_number(first.text):
+                    return first.text, PostReason.REPLY, model_at, tool_at
+                if verify_reply_sources(
+                    first.text, allowed_files, allowed_urls
+                ) and numbers_grounded_in_context(first.text, context_blob):
+                    return first.text, PostReason.REPLY, model_at, tool_at
+            elif (
+                first.text.strip()
+                and not is_unsure(first.text)
+                and numbers_grounded_in_context(first.text, context_blob)
+            ):
+                if web is not None and web.useful and len(web.urls) == 1:
+                    return (
+                        f"{first.text.rstrip()} ({web.urls[0]})",
+                        PostReason.REPLY,
+                        model_at,
+                        tool_at,
+                    )
+                if (web is None or not web.useful) and len(allowed_files) == 1 and hits:
+                    return (
+                        f"{first.text.rstrip()} (src: {hits[0].file})",
+                        PostReason.REPLY,
+                        model_at,
+                        tool_at,
+                    )
+
             self._emit_activity("Verifying source citations for reply…", "working")
-            second = await self.llm.respond(
+            second = await self._llm_respond(
                 prompt
                 + "\n\nIMPORTANT: Every car claim or number must cite a given source verbatim "
                 "as (src: filename.md) or a full https:// URL. If no given source backs it, "
@@ -321,8 +502,20 @@ class AgentLoop:
                 tools=None,
                 enable_web_search=False,
                 timeout_s=self.timeout_s,
+                max_output_tokens=450,
             )
-            return finalize_reply(first.text, second.text), PostReason.REPLY, model_at, tool_at
+            return (
+                finalize_reply(
+                    first.text,
+                    second.text,
+                    allowed_files=allowed_files,
+                    allowed_urls=allowed_urls,
+                    context_text=context_blob,
+                ),
+                PostReason.REPLY,
+                model_at,
+                tool_at,
+            )
         except AssertionError:
             raise
         except Exception:
@@ -358,6 +551,7 @@ class AgentLoop:
             said_by=event.speaker,
             time=format_meeting_time(event.t_detected),
             today=self.today(),
+            aliases=self.aliases,
         )
         if task_records:
             result = await self.create_task(task_records[0])
@@ -413,7 +607,11 @@ class AgentLoop:
             if call.name == "create_task":
                 args = call.arguments or {}
                 task_text = str(args.get("task") or "").strip()
-                owner = str(args.get("owner") or "").strip()
+                owner = normalize_owner(
+                    str(args.get("owner") or ""),
+                    said_by=event.speaker,
+                    aliases=self.aliases,
+                )
                 due_text = str(args.get("due") or "").strip()
                 due = parse_due(due_text, today=self.today()) if due_text else None
                 if _is_lookup_question(event.question) and (
@@ -502,6 +700,7 @@ def _prompt(
     *,
     speaker: str = "",
     today: date | None = None,
+    intent: str = "",
 ) -> str:
     notes = "\n\n".join(f"(src: {hit.file}) {hit.text}" for hit in hits) or "(none)"
     web_parts = [
@@ -513,16 +712,23 @@ def _prompt(
         if part
     ]
     web_block = "\n".join(web_parts) or "(none)"
-    car_rule = (
-        "Route: Car/automotive query. Ground car claims in <knowledge> or <web_results> "
-        "(plus <meeting_digest> when comparing with meeting notes). Cite (src: filename.md) "
-        "or a full https:// URL, or reply: I'm not sure — I don't have a source for that."
-        if car
-        else (
+    if intent == "hybrid":
+        car_rule = (
+            "Route: Hybrid automotive + meeting query. Ground external car facts/prices in "
+            "<knowledge> or <web_results> with (src: filename.md) or a full https:// URL, "
+            "and compare against the meeting decisions/budgets in <meeting_digest>."
+        )
+    elif car:
+        car_rule = (
+            "Route: Car/automotive query. Ground car claims in <knowledge> or <web_results>. "
+            "Cite (src: filename.md) or a full https:// URL, or reply: "
+            "I'm not sure — I don't have a source for that."
+        )
+    else:
+        car_rule = (
             "Route: Meeting/tasks query. Check every section of <meeting_digest> and "
             "<knowledge>; do not search the web. Refuse if unrelated to cars, meetings, or tasks."
         )
-    )
     meta_parts: list[str] = []
     if speaker:
         meta_parts.append(f"Asked by: {speaker}")
@@ -741,9 +947,15 @@ def _resolve_meeting_reply(llm_text: str | None, question: str, digest: str) -> 
         "no action items",
         "nothing has been recorded",
     )
-    if any(cue in low for cue in false_empty_cues):
+    if is_unsure(text) or any(cue in low for cue in false_empty_cues):
         fallback = _answer_from_digest(question, digest)
-        if fallback.startswith(("Recorded tasks:", "Stored meeting notes:", "From the meeting")):
+        if fallback.startswith((
+            "Recorded tasks:",
+            "Stored meeting notes:",
+            "From the meeting",
+        )):
+            return fallback
+        if is_unsure(text) and fallback.startswith("No recorded tasks matched"):
             return fallback
     return text
 
@@ -877,8 +1089,14 @@ def _answer_from_digest(question: str, digest: str) -> str:
         if not task_lines:
             return "There are no tasks recorded yet."
         matched_tasks = _rank_lines(task_lines, keywords, q_lower)
-        chosen = matched_tasks[:8] if matched_tasks else task_lines[:8]
-        return f"Recorded tasks: {' | '.join(chosen)}"
+        if matched_tasks:
+            return f"Recorded tasks: {' | '.join(matched_tasks[:8])}"
+        specific_filter = [k for k in keywords if k not in _TASK_STATUS_WORDS]
+        want_open = _has_any_phrase(q_lower, _OPEN_TASK_CUES)
+        want_done = _has_any_phrase(q_lower, _DONE_TASK_CUES)
+        if specific_filter or want_open or want_done:
+            return "No recorded tasks matched that query."
+        return f"Recorded tasks: {' | '.join(task_lines[:8])}"
 
     if is_notes_query and note_lines:
         matched_notes = _rank_lines(note_lines, keywords, q_lower)
@@ -907,6 +1125,44 @@ def _answer_from_digest(question: str, digest: str) -> str:
     return "The meeting just started — nothing has been recorded yet."
 
 
+_OPEN_TASK_CUES = (
+    "open",
+    "pending",
+    "todo",
+    "to-do",
+    "incomplete",
+    "not started",
+    "remaining",
+    "left",
+)
+_DONE_TASK_CUES = ("done", "completed", "finished", "closed")
+_TASK_STATUS_WORDS = {
+    "open",
+    "pending",
+    "todo",
+    "incomplete",
+    "done",
+    "completed",
+    "finished",
+    "closed",
+    "status",
+    "not",
+    "started",
+    "remaining",
+    "left",
+    "existing",
+    "exist",
+}
+
+
+def _has_word(text: str, word: str) -> bool:
+    return re.search(rf"\b{re.escape(word)}\b", text, re.I) is not None
+
+
+def _has_any_phrase(text: str, phrases: tuple[str, ...]) -> bool:
+    return any(re.search(rf"\b{re.escape(phrase)}\b", text, re.I) is not None for phrase in phrases)
+
+
 _GREETINGS = {"hello", "hi", "hey", "status", "help", "are you there", "can you hear me"}
 
 
@@ -926,36 +1182,33 @@ def _is_off_topic(question: str, digest: str, car: bool) -> bool:
     keywords = [w for w in raw_words if w not in _DIGEST_STOP]
     if keywords and digest:
         digest_low = digest.lower()
-        if any(kw in digest_low for kw in keywords):
+        if any(_has_word(digest_low, kw) for kw in keywords):
             return False
     return True
 
 
 def _rank_lines(lines: list[str], keywords: list[str], q_lower: str) -> list[str]:
     scored: list[tuple[int, int, str]] = []
-    want_open = any(w in q_lower for w in ("open", "pending", "todo", "to-do", "incomplete"))
-    want_done = any(w in q_lower for w in ("done", "completed", "finished", "closed"))
-    status_words = {
-        "open",
-        "pending",
-        "todo",
-        "incomplete",
-        "done",
-        "completed",
-        "finished",
-        "closed",
-        "status",
-    }
-    filter_keywords = [k for k in keywords if k not in status_words]
+    want_open = _has_any_phrase(q_lower, _OPEN_TASK_CUES)
+    want_done = _has_any_phrase(q_lower, _DONE_TASK_CUES)
+    filter_keywords = [k for k in keywords if k not in _TASK_STATUS_WORDS]
     for idx, line in enumerate(lines):
         low = line.lower()
+        is_done_line = "[done]" in low or "[completed]" in low or "[closed]" in low
+        is_open_line = "[todo]" in low or "[in progress]" in low or "[not started]" in low
+        if want_open and not want_done and is_done_line:
+            continue
+        if want_done and not want_open and is_open_line and not filter_keywords:
+            continue
         score = 0
         for kw in filter_keywords:
-            if kw in low:
+            if _has_word(low, kw):
                 score += 2
-        if want_open and ("[todo]" in low or "[in progress]" in low):
+        if filter_keywords and score == 0:
+            continue
+        if want_open and is_open_line:
             score += 1
-        elif want_done and "[done]" in low:
+        elif want_done and is_done_line:
             score += 1
         if score > 0:
             scored.append((score, idx, line))

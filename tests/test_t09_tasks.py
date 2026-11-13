@@ -279,3 +279,78 @@ async def test_t09_extractor_falls_back_when_llm_fails(tmp_path) -> None:
     assert len(poster.posted) == 1
     store.close()
 
+
+def test_parse_due_ordinals_eod_eow_and_weekday_precedence() -> None:
+    from ba_agent.tasks_extract.dates import short_due
+
+    # TODAY is Sunday 2026-10-25.
+    assert parse_due("October 28th", today=TODAY) == date(2026, 10, 28)
+    assert parse_due("the 24th of October", today=TODAY) == date(2026, 10, 24)
+    assert parse_due("tonight", today=TODAY) == TODAY
+    assert parse_due("by EOD", today=TODAY) == TODAY
+    assert parse_due("end of week", today=TODAY) == date(2026, 10, 30)
+    # Named weekday must take precedence over "this week".
+    assert parse_due("Wednesday this week", today=TODAY) == date(2026, 10, 28)
+    assert parse_due("in 3 days", today=TODAY) == date(2026, 10, 28)
+    assert short_due("next month", None) != "Mon"
+
+
+def test_model_json_due_key_and_pronoun_alias_normalization() -> None:
+    import json
+
+    payload = json.dumps(
+        {
+            "tasks": [
+                {"task": "send thermal report", "owner": "I", "due": "2026-10-30"},
+                {"task": "review BMS quote", "owner": "Ali K.", "due_text": "tomorrow"},
+            ]
+        }
+    )
+    records = tasks_from_model_json(
+        payload,
+        said_by="Sara",
+        time="[01:00]",
+        today=TODAY,
+        overheard=True,
+        aliases={"Ali K.": "Ali"},
+    )
+    assert len(records) == 2
+    assert records[0].owner == "Sara"
+    assert records[0].due == date(2026, 10, 30)
+    assert records[1].owner == "Ali"
+    assert records[1].due == date(2026, 10, 26)
+
+    # Non-date "on ..." phrases in task body must not truncate task description, while trailing
+    # prepositional or bare relative dates parse cleanly.
+    no_due_cmd = parse_task_command(
+        "add a task for Ali to check on the supplier",
+        said_by="Sara",
+        time="[01:10]",
+        today=TODAY,
+    )
+    assert no_due_cmd is not None
+    assert no_due_cmd.task == "check on the supplier"
+    assert no_due_cmd.due is None
+
+    two_prep_cmd = parse_task_command(
+        "add a task for Ali to test the car on highway roads by Friday",
+        said_by="Sara",
+        time="[01:15]",
+        today=TODAY,
+    )
+    assert two_prep_cmd is not None
+    assert two_prep_cmd.task == "test the car on highway roads"
+    assert two_prep_cmd.due == date(2026, 10, 30)
+
+    bare_due_cmd = parse_task_command(
+        "add a task for Ali to send the thermal report tomorrow",
+        said_by="Sara",
+        time="[01:20]",
+        today=TODAY,
+    )
+    assert bare_due_cmd is not None
+    assert bare_due_cmd.task == "send the thermal report"
+    assert bare_due_cmd.due == date(2026, 10, 26)
+
+
+

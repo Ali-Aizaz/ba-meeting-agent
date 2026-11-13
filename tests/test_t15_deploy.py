@@ -406,3 +406,77 @@ async def test_t15_switching_meetings_runs_final_save_in_background_and_leaves_i
         timeout=2.0,
     )
     assert save_finished.is_set()
+
+
+def test_worker_peek_uses_non_renewing_tcp_port_and_structured_logs() -> None:
+    worker_text = (ROOT / "cloudflare" / "src" / "index.ts").read_text(encoding="utf-8")
+    wrangler_text = (ROOT / "wrangler.jsonc").read_text(encoding="utf-8")
+
+    assert "STATUS_CACHE_TTL_MS" in worker_text
+    assert "getTcpPort(this.defaultPort)" in worker_text
+    assert 'schedule(IDLE_STOP_DELAY_SECONDS, "stopIfIdle", {})' in worker_text
+    assert "AbortSignal.timeout(3000)" in worker_text
+    assert "override onStop(" in worker_text
+    assert "async stopIfIdle()" in worker_text
+    assert "JSON.stringify" in worker_text
+    assert "alarm(" not in worker_text
+    assert '"nodejs_compat"' in wrangler_text
+    assert '"head_sampling_rate": 1' in wrangler_text
+
+
+@pytest.mark.asyncio
+async def test_keep_alive_exits_cleanly_after_idle_timeout(monkeypatch) -> None:
+    from ba_agent.session import run_join
+
+    settings = load_settings()
+    settings.llm.api_key = "sk-test"
+    settings.notion.token = "ntn_test"
+    settings.notion.databases.summary = "sum"
+    settings.notion.databases.tasks = "tasks"
+    settings.browser.keep_alive = True
+    settings.browser.idle_timeout_s = 0.05
+
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setattr("ba_agent.session.configure_logging", lambda: None)
+    monkeypatch.setattr("ba_agent.session.ensure_ready", lambda _s: None)
+    monkeypatch.setattr("ba_agent.session._let_cleanup_finish", lambda: None)
+
+    class _DummyServer:
+        def shutdown(self) -> None:
+            return None
+
+    class _DummyAdapter:
+        def __init__(self, _settings) -> None:
+            self.ended_event = asyncio.Event()
+            self._left = False
+            self._admitted_at = None
+            self.closed = False
+
+        async def close(self, *, force: bool = True) -> None:
+            del force
+            self.closed = True
+
+    dummy_adapter: list[_DummyAdapter] = []
+
+    def make_adapter(cfg):
+        inst = _DummyAdapter(cfg)
+        dummy_adapter.append(inst)
+        return inst
+
+    run_count = 0
+
+    async def fake_single_meeting(*_args, **_kwargs) -> None:
+        nonlocal run_count
+        run_count += 1
+
+    monkeypatch.setattr("ba_agent.session.start_status_server", lambda *_a: _DummyServer())
+    monkeypatch.setattr("ba_agent.session.GoogleMeetAdapter", make_adapter)
+    monkeypatch.setattr("ba_agent.session._run_single_meeting", fake_single_meeting)
+
+    await asyncio.wait_for(
+        run_join(settings, "https://meet.google.com/abc-defg-hij"),
+        timeout=2.0,
+    )
+    assert run_count == 1
+    assert dummy_adapter and dummy_adapter[0].closed is True
+

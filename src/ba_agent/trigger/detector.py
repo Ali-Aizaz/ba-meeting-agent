@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from rapidfuzz import fuzz
@@ -43,6 +45,7 @@ class _Pending:
     source: str
     t: float
     caption_id: str | None
+    committed_at: float | None = None
 
 
 @dataclass
@@ -68,6 +71,8 @@ class TriggerDetector:
         fuzzy_threshold: int = 85,
         fuzzy: bool = True,
         extra_phrases: list[str] | None = None,
+        is_speaker_active: Callable[[str], bool] | None = None,
+        fast_pause_wait_s: float = 2.2,
     ) -> None:
         self.pause_wait_s = pause_wait_s
         self.dedup_window_s = dedup_window_s
@@ -75,6 +80,8 @@ class TriggerDetector:
         self.fuzzy_threshold = fuzzy_threshold
         self.fuzzy = fuzzy
         self.extra_phrases = extra_phrases or []
+        self.is_speaker_active = is_speaker_active
+        self.fast_pause_wait_s = fast_pause_wait_s
         self.pending: _Pending | None = None
         self.followup: _Followup | None = None
         self.last: _Last | None = None
@@ -83,9 +90,25 @@ class TriggerDetector:
         self.followup = _Followup(speaker=speaker, until=now + self.followup_window_s)
         self.pending = None
 
+    def _pending_deadline(self, pending: _Pending, *, fast: bool) -> float:
+        wait_s = min(self.pause_wait_s, self.fast_pause_wait_s) if fast else self.pause_wait_s
+        base_deadline = pending.t + wait_s
+        if pending.committed_at is None or pending.committed_at <= pending.t:
+            return base_deadline
+        min_post_commit = min(wait_s, 1.8) if fast else self.pause_wait_s
+        return max(base_deadline, pending.committed_at + min_post_commit)
+
     def tick(self, t: float) -> list[TriggerEvent]:
-        if self.pending and t - self.pending.t >= self.pause_wait_s:
-            return self._expire(t)
+        if self.pending:
+            fast = False
+            if self.is_speaker_active is not None:
+                try:
+                    active = bool(self.is_speaker_active(self.pending.speaker))
+                except Exception:
+                    active = True
+                fast = not active
+            if t >= self._pending_deadline(self.pending, fast=fast):
+                return self._expire(t)
         if self.followup and t > self.followup.until:
             self.followup = None
         return []
@@ -97,19 +120,19 @@ class TriggerDetector:
         source: str,
         t: float,
         caption_id: str | None = None,
+        *,
+        committed_at: float | None = None,
     ) -> list[TriggerEvent]:
         events: list[TriggerEvent] = []
-        if (
-            self.pending
-            and speaker == self.pending.speaker
-            and t - self.pending.t <= self.pause_wait_s
-        ):
-            pending = self.pending
-            self.pending = None
-            events.extend(self._merge(pending, speaker, text, source, t, caption_id))
-            return events
-        if self.pending and t - self.pending.t > self.pause_wait_s:
-            events.extend(self._expire(t))
+        if self.pending:
+            merge_deadline = self._pending_deadline(self.pending, fast=False)
+            if speaker == self.pending.speaker and t <= merge_deadline:
+                pending = self.pending
+                self.pending = None
+                events.extend(self._merge(pending, speaker, text, source, t, caption_id))
+                return events
+            if t > merge_deadline:
+                events.extend(self._expire(t))
         if self.followup and t > self.followup.until:
             self.followup = None
         if self.followup and speaker == self.followup.speaker and t <= self.followup.until:
@@ -149,7 +172,15 @@ class TriggerDetector:
             and source != "chat"
             and single_token not in _IMMEDIATE_ONE_WORD
         ):
-            self.pending = _Pending(speaker, match.question, source, t, caption_id)
+            commit_t = max(t, committed_at) if committed_at is not None else None
+            self.pending = _Pending(
+                speaker,
+                match.question,
+                source,
+                t,
+                caption_id,
+                committed_at=commit_t,
+            )
             return events
         if self._duplicate(speaker, match.question, t):
             return events
@@ -223,6 +254,7 @@ class TriggerDetector:
             caption_id=caption_id,
             t_detected=t,
             followup=followup,
+            t_committed_perf=time.perf_counter(),
         )
         self.last = _Last(speaker=speaker, question=question, t=t)
         return event

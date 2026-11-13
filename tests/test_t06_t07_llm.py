@@ -184,3 +184,78 @@ def test_t07_natural_language_knowledge_queries_and_policy() -> None:
     assert needs_current_fact(price_q)
     assert should_search_web(price_q, price_hits, min_score=0.5)
 
+
+def test_bm25_acronym_and_four_letter_plural_queries_hit_knowledge() -> None:
+    from ba_agent.knowledge.policy import needs_current_fact, should_search_web
+
+    index = KnowledgeIndex(Path("data/knowledge"), 0.5)
+    for query in [
+        "what does AEB stand for in modern cars?",
+        "what is ESC in SUVs?",
+        "WLTP vs EPA range",
+        "how does lane keeping assist work?",
+    ]:
+        hits = index.search(query)
+        assert hits, query
+        assert 0.5 <= hits[0].score <= 1.0, (query, hits[0].score)
+        assert needs_current_fact(query) is False, query
+
+    assert needs_current_fact("2025 Tesla Model 3 EPA range") is True
+    assert needs_current_fact("why do 800V EVs draw lower current when charging?") is False
+    assert needs_current_fact("what safety aspects matter in crumple zones?") is False
+
+    # Unseen technical noun ("camshaft") must not be masked by low default IDF on "engine".
+    cam_q = "how does a camshaft work in an engine?"
+    cam_hits = index.search(cam_q)
+    assert should_search_web(cam_q, cam_hits, min_score=0.5) is True
+
+
+@pytest.mark.asyncio
+async def test_search_cars_ttl_cache_and_warm_up_model_fallback() -> None:
+    from ba_agent.models import LLMResponse
+
+    client = OpenAIResponsesClient(api_key="test-key", model="gpt-6-luna")
+
+    class _FakeNotFoundError(Exception):
+        status_code = 404
+
+    class _FakeModels:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def retrieve(self, model_name: str) -> dict:
+            self.calls.append(model_name)
+            raise _FakeNotFoundError("model not found")
+
+    class _FakeSDK:
+        def __init__(self) -> None:
+            self.models = _FakeModels()
+
+        async def close(self) -> None:
+            return None
+
+    fake_sdk = _FakeSDK()
+    client._client = fake_sdk
+    await client.warm_up()
+    assert fake_sdk.models.calls == ["gpt-6-luna"]
+    assert client._fallback_model == "gpt-4o-mini"
+
+    respond_calls = 0
+
+    async def fake_respond(*_args, **_kwargs) -> LLMResponse:
+        nonlocal respond_calls
+        respond_calls += 1
+        return LLMResponse(
+            text="Toyota RAV4 Hybrid starts around $32,850 (https://example.com/rav4).",
+            search_queries=["2025 Toyota RAV4 hybrid price"],
+        )
+
+    client.respond = fake_respond  # type: ignore[method-assign]
+    first = await client.search_cars("2025 Toyota RAV4 hybrid price")
+    second = await client.search_cars("  2025 toyota   rav4 hybrid price ")
+    assert first.useful is True
+    assert second.text == first.text
+    assert respond_calls == 1
+    await client.aclose()
+
+

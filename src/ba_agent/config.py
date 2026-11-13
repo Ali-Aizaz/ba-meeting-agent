@@ -86,6 +86,7 @@ class NotionSettings(_Model):
     databases: NotionDatabaseSettings = Field(default_factory=NotionDatabaseSettings)
     version: str = "2022-06-28"
     parent_page_id: str = ""
+    live_sync_interval_s: float = 15.0
 
 
 class StorageSettings(_Model):
@@ -104,6 +105,7 @@ class BrowserSettings(_Model):
     no_sandbox: bool = True
     receive_video: bool = False
     keep_alive: bool = True
+    idle_timeout_s: int = 900
 
 
 def package_root() -> Path:

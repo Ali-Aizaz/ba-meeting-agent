@@ -268,6 +268,7 @@ async def test_t11_task_cache_avoids_redundant_database_queries() -> None:
 @pytest.mark.asyncio
 async def test_t11_live_save_without_children_then_final_save_with_llm_fallback(tmp_path) -> None:
     from datetime import datetime, timezone
+
     from ba_agent.memory.store import MeetingStore
     from ba_agent.models import CaptionLine
     from ba_agent.session import _save, _save_live
@@ -371,5 +372,82 @@ async def test_t11_list_tasks_summaries_and_database_context() -> None:
     assert "Stored Notion Meeting Notes:" in ctx
     assert "Chassis and Safety Review" in ctx
     await service.aclose()
+
+
+@pytest.mark.asyncio
+async def test_live_save_keeps_summaries_cache_and_excludes_current_in_db_context() -> None:
+    fake = _FakeNotion()
+    service = _service(fake)
+    await service.verify()
+    await service.save_meeting("Prior meeting notes.", "[00:01] Sara: prior", [])
+    summaries = await service.list_summaries(refresh=True)
+    assert len(summaries) == 1
+
+    # Simulate a second live meeting page updates via append_children=False.
+    service.meeting_id = "m2"
+    service.summary_page_id = None
+    await service.save_meeting(
+        "Live meeting draft.",
+        "[00:02] Ali: live",
+        [],
+        append_children=False,
+    )
+    assert service._summaries_loaded_at > 0.0
+    assert any("Prior meeting notes." in s["summary"] for s in service._summaries_cache)
+
+    # list_summaries still includes saved pages, while database_context excludes current meeting.
+    cached_ids = {s["id"] for s in await service.list_summaries()}
+    assert cached_ids
+    live_ids = {s["id"] for s in await service.list_summaries(refresh=True)}
+    assert service.summary_page_id in live_ids
+    ctx = await service.database_context(exclude_current_meeting=True)
+    assert "Prior meeting notes." in ctx
+    assert "Live meeting draft." not in ctx
+    await service.aclose()
+
+
+@pytest.mark.asyncio
+async def test_burst_limiter_parallel_db_context_and_packed_transcript_toggle() -> None:
+    import time
+
+    from ba_agent.notion.client import _Limiter, _transcript_toggle
+
+    limiter = _Limiter(min_interval=0.2, burst=2)
+    t0 = time.monotonic()
+    await limiter.wait()
+    await limiter.wait()
+    # Two calls within burst=2 must complete immediately without sleeping 200ms.
+    assert time.monotonic() - t0 < 0.1
+
+    fake = _FakeNotion()
+    service = _service(fake)
+    await service.verify()
+    rec = TaskRecord(
+        task="Validate coolant loop",
+        owner="Ali",
+        due=date(2026, 10, 30),
+        due_text="2026-10-30",
+        status="Todo",
+        said_by="Sara",
+        time="[00:05]",
+        key=dedup_key("Validate coolant loop", "Ali"),
+    )
+    await service.create_task(rec)
+    await service.save_meeting("Cooling review notes.", "[00:01] Ali: cooling", [rec])
+    ctx = await service.database_context(refresh=True)
+    assert "Stored Notion Tasks:" in ctx
+    assert "Stored Notion Meeting Notes:" in ctx
+
+    lines = [f"[{i:02d}:00] Ali: Line {i} discussing thermal validation." for i in range(250)]
+    blocks = _transcript_toggle("\n".join(lines))
+    children = blocks[0]["toggle"]["children"]
+    assert len(children) <= 95
+    packed_text = "\n".join(
+        child["paragraph"]["rich_text"][0]["text"]["content"] for child in children
+    )
+    assert "Line 0" in packed_text
+    assert "Line 249" in packed_text
+    await service.aclose()
+
 
 

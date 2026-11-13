@@ -4,8 +4,8 @@ Car safety covers passive crash structure, occupant restraints, and active drive
 
 ## ADAS and active safety
 
-Active safety and Advanced Driver Assistance Systems (ADAS) use cameras, radar, and ultrasonic sensors to help prevent collisions. Common features include Anti-lock Braking System (ABS), Electronic Stability Control (ESC), Automatic Emergency Braking (AEB), Adaptive Cruise Control (ACC), Lane Keeping Assist (LKA), and Blind Spot Monitoring (BSM).
+Active safety and Advanced Driver Assistance Systems (ADAS) use sensor fusion across cameras, millimeter-wave radar, and ultrasonic sensors to help prevent collisions. Common features include Anti-lock Braking System (ABS), Electronic Stability Control (ESC — especially vital on taller SUVs and crossovers to help prevent skids and rollovers), Automatic Emergency Braking (AEB), Adaptive Cruise Control (ACC), Lane Keeping Assist (LKA), and Blind Spot Monitoring (BSM).
 
-## Euro NCAP
+## IIHS, NHTSA, and Euro NCAP ratings
 
-Euro NCAP is an independent safety program that crash-tests cars and publishes star ratings (up to 5 stars). It evaluates adult occupant protection, child occupant protection, vulnerable road users (pedestrians and cyclists), and safety assist systems.
+Euro NCAP, IIHS, and NHTSA are independent crash-testing and safety assessment bodies that evaluate adult and child occupant protection, pedestrian safety, rollover resistance, and active collision-avoidance systems.

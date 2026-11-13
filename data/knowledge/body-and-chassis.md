@@ -8,4 +8,8 @@ The suspension (springs, dampers/shock absorbers, and control arms such as MacPh
 
 ## Drivetrain and brakes
 
-Drivetrain layouts include front-wheel drive (FWD), rear-wheel drive (RWD), and all-wheel drive (AWD / 4WD). Hydraulic disc brakes use calipers and rotors to slow the wheels, working alongside regenerative braking on hybrids and EVs.
+Drivetrain layouts include front-wheel drive (FWD), rear-wheel drive (RWD), and all-wheel drive (AWD / 4WD). Hydraulic disc brakes use calipers and rotors to slow the wheels, working alongside regenerative braking on hybrids and EVs, while modern brake-by-wire systems decouple pedal feel from hydraulic pressure.
+
+## EV skateboard platforms and NVH
+
+Dedicated EV skateboard platforms mount a flat traction battery between the axles to lower the center of gravity, improve torsional rigidity, and maximize cabin floor space. Chassis engineers also tune Noise, Vibration, and Harshness (NVH) with acoustic glass and subframe bushings because electric drivetrains mask engine sound and make road and wind noise more noticeable.

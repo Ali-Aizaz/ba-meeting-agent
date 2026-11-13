@@ -278,7 +278,9 @@ async def test_t12_llm_failure_fallback_answers_knowledge_digest_and_tasks() -> 
     await agent.handle(_event("what did Sara say?", trigger_id="t_fb_digest"))
     assert "Sara said the budget is locked" in poster.posts[-1][0]
 
-    await agent.handle(_event("Ali, please finish the cost sheet by Friday", trigger_id="t_fb_task"))
+    await agent.handle(
+        _event("Ali, please finish the cost sheet by Friday", trigger_id="t_fb_task")
+    )
     assert len(created) == 1
     assert created[0].owner == "Ali"
     assert poster.posts[-1][1] is PostReason.CONFIRMATION
@@ -386,7 +388,9 @@ async def test_t12_off_topic_non_car_questions_are_refused() -> None:
 
 
 @pytest.mark.asyncio
-async def test_t12_checks_previous_meetings_and_tasks_db_even_when_llm_misses_or_calls_tool() -> None:
+async def test_t12_checks_previous_meetings_and_tasks_db_even_when_llm_misses_or_calls_tool() -> (
+    None
+):
     db_ctx = (
         "Stored Notion Tasks:\n"
         "- Ali: Send competitor pricing table for 3 compact SUVs (due: 2026-04-16) [Todo]\n"
@@ -394,7 +398,8 @@ async def test_t12_checks_previous_meetings_and_tasks_db_even_when_llm_misses_or
         "Stored Local Tasks:\n"
         "- Sara: Prepare Q2 warranty slide deck (due: 2026-04-20) [Todo]\n"
         "Stored Notion Meeting Notes:\n"
-        "- powertrain-kickoff (2026-04-10): Agreed to target a 60 kWh LFP pack for the entry trim.\n"
+        "- powertrain-kickoff (2026-04-10): Agreed to target a 60 kWh LFP pack "
+        "for the entry trim.\n"
         "Previous Local Meeting Captions:\n"
         "[02:10] Omar: We also locked the thermal valve supplier for the prototype."
     )
@@ -415,7 +420,10 @@ async def test_t12_checks_previous_meetings_and_tasks_db_even_when_llm_misses_or
                     ]
                 )
             return LLMResponse(
-                text="Ali has Send competitor pricing table, Omar has Finalize brake pad supplier shortlist, and Sara has Prepare Q2 warranty slide deck."
+                text=(
+                    "Ali has Send competitor pricing table, Omar has Finalize brake pad "
+                    "supplier shortlist, and Sara has Prepare Q2 warranty slide deck."
+                )
             )
 
     async def search_cars(query: str) -> WebResult:
@@ -436,7 +444,7 @@ async def test_t12_checks_previous_meetings_and_tasks_db_even_when_llm_misses_or
     assert "Omar: Finalize brake pad supplier shortlist" in reply1
     assert "Sara: Prepare Q2 warranty slide deck" in reply1
 
-    # 2. When LLM falsely claims "There are no tasks in this meeting", agent overrides with DB tasks.
+    # 2. When LLM falsely claims "There are no tasks", agent overrides with DB tasks.
     agent.llm = EmptyOrFalseEmptyLLM("false_empty")
     await agent.handle(_event("what tasks do we have?", trigger_id="t_false_empty"))
     reply2 = poster.posts[-1][0]
@@ -453,8 +461,7 @@ async def test_t12_checks_previous_meetings_and_tasks_db_even_when_llm_misses_or
     assert agent.pending_task is None
     assert agent.trigger.followup is None
 
-    # 4. When user gives a task command matching an existing task in the DB without repeating the due date,
-    # agent resolves the existing task from the tasks DB instead of asking "When is that due?".
+    # 4. Task command matching an existing DB task resolves from DB without repeating due date.
     created_records = []
 
     async def record_create_task(rec):
@@ -478,6 +485,161 @@ async def test_t12_checks_previous_meetings_and_tasks_db_even_when_llm_misses_or
     assert created_records[0].due == date(2026, 4, 16)
     assert "Already tracked" in poster.posts[-1][0]
     assert agent.trigger.followup is None
+
+
+@pytest.mark.asyncio
+async def test_pure_car_question_skips_notion_db_fetch() -> None:
+    db_calls = 0
+
+    async def counting_db_ctx() -> str:
+        nonlocal db_calls
+        db_calls += 1
+        return "Stored Notion Tasks:\n- Ali: Cost sheet (due: 2026-04-16) [Todo]"
+
+    async def no_web(_q: str) -> WebResult:
+        return WebResult()
+
+    agent, poster, _ = _agent(
+        "A hybrid combines an internal combustion engine with an electric motor (src: hybrid.md).",
+        no_web,
+    )
+    agent.fetch_db_context = counting_db_ctx
+    await agent.handle(_event("what is a hybrid?", trigger_id="t_pure_car"))
+    assert db_calls == 0
+    assert "engine" in poster.posts[-1][0]
+
+
+@pytest.mark.asyncio
+async def test_automotive_meeting_questions_do_not_false_not_sure() -> None:
+    from ba_agent.guardrails.citations import NOT_SURE
+
+    digest = (
+        "Stored Notion Tasks:\n"
+        "- Omar: Finalize brake pad supplier shortlist (due: 2026-04-17) [Done]\n"
+        "Stored Notion Meeting Notes:\n"
+        "- charging-sync (2026-04-10): Set DC fast charging target at 150 kW for 2027 trim."
+    )
+
+    class _WeakLLM:
+        async def respond(self, input, tools=None, *, enable_web_search=False, timeout_s=None):
+            del input, tools, enable_web_search, timeout_s
+            return LLMResponse(text=NOT_SURE)
+
+    poster = FakePoster()
+
+    async def no_task(_record):
+        return TaskWrite(True, "ok")
+
+    async def no_save() -> str:
+        return "https://www.notion.so/p1"
+
+    async def no_leave() -> None:
+        return None
+
+    async def no_web(_q: str) -> WebResult:
+        return WebResult()
+
+    agent = AgentLoop(
+        knowledge=KnowledgeIndex(Path("data/knowledge"), 0.5),
+        search_cars=no_web,
+        llm=_WeakLLM(),
+        create_task=no_task,
+        save_meeting=no_save,
+        post=poster,
+        trigger=TriggerDetector(pause_wait_s=5, dedup_window_s=3, followup_window_s=20),
+        leave=no_leave,
+        digest=lambda: digest,
+        today=lambda: date(2026, 4, 15),
+        min_score=0.5,
+        timeout_s=5,
+        participants=["Omar", "Sara", "Ali"],
+    )
+
+    await agent.handle(_event("has Omar finished the brake pad shortlist?", trigger_id="t_m1"))
+    assert poster.posts[-1][0] != NOT_SURE
+    assert "Omar" in poster.posts[-1][0]
+
+    await agent.handle(
+        _event("what target did we set for DC fast charging?", trigger_id="t_m2")
+    )
+    assert poster.posts[-1][0] != NOT_SURE
+    assert "150 kW" in poster.posts[-1][0]
+
+
+@pytest.mark.asyncio
+async def test_open_vs_done_task_filtering_and_missing_owner_precision() -> None:
+    digest = (
+        "Stored Notion Tasks:\n"
+        "- Ali: Send competitor pricing table (due: 2026-04-16) [Not started]\n"
+        "- Omar: Finalize brake pad supplier shortlist (due: 2026-04-15) [Done]\n"
+    )
+    poster = FakePoster()
+
+    class _EmptyLLM:
+        async def respond(self, input, tools=None, *, enable_web_search=False, timeout_s=None):
+            del input, tools, enable_web_search, timeout_s
+            return LLMResponse(text="I'm not sure — I don't have a source for that.")
+
+    async def no_task(_record):
+        return TaskWrite(True, "ok")
+
+    async def no_save() -> str:
+        return "https://www.notion.so/p1"
+
+    async def no_leave() -> None:
+        return None
+
+    async def no_web(_q: str) -> WebResult:
+        return WebResult()
+
+    agent = AgentLoop(
+        knowledge=KnowledgeIndex(Path("data/knowledge"), 0.5),
+        search_cars=no_web,
+        llm=_EmptyLLM(),
+        create_task=no_task,
+        save_meeting=no_save,
+        post=poster,
+        trigger=TriggerDetector(pause_wait_s=5, dedup_window_s=3, followup_window_s=20),
+        leave=no_leave,
+        digest=lambda: digest,
+        today=lambda: date(2026, 4, 15),
+        min_score=0.5,
+        timeout_s=5,
+        participants=["Ali", "Omar", "Nadia"],
+    )
+
+    await agent.handle(_event("what open tasks do we have?", trigger_id="t_open_tasks"))
+    open_reply = poster.posts[-1][0]
+    assert "Send competitor pricing table" in open_reply
+    assert "Finalize brake pad supplier shortlist" not in open_reply
+
+    await agent.handle(_event("what tasks does Nadia have?", trigger_id="t_missing_owner"))
+    assert poster.posts[-1][0] == "No recorded tasks matched that query."
+
+    from ba_agent.agent.loop import _resolve_meeting_reply
+
+    # Accurate LLM negative reply must NOT be overwritten when digest confirms no tasks exist.
+    accurate_none = "There are no tasks assigned to Nadia right now."
+    assert (
+        _resolve_meeting_reply(accurate_none, "what tasks does Nadia have?", digest)
+        == accurate_none
+    )
+
+
+def test_word_boundary_off_topic_blocks_substring_collisions() -> None:
+    from ba_agent.agent.loop import _is_off_topic
+
+    # "ai" in "said" and "ev" in "every" must NOT falsely bypass off-topic detection.
+    assert _is_off_topic("said every chef about the chocolate cake recipe?", "", False) is True
+    assert (
+        _is_off_topic(
+            "who won the UEFA Champions League match every year?",
+            "Sara discussed thermal cooling",
+            False,
+        )
+        is True
+    )
+
 
 
 

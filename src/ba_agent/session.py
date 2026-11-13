@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 import uuid
@@ -150,8 +151,25 @@ async def run_join(settings: Settings, url: str) -> None:
             status.chat_enabled = False
             status.stage = "idle"
             if not queued_url:
-                logger.info("browser kept alive and signed in; waiting for next meeting on /join")
-                await next_url_event.wait()
+                idle_timeout = getattr(settings.browser, "idle_timeout_s", 0)
+                if idle_timeout and idle_timeout > 0:
+                    logger.info(
+                        "browser kept alive and signed in; waiting up to %ds for next /join",
+                        idle_timeout,
+                    )
+                    try:
+                        await asyncio.wait_for(next_url_event.wait(), timeout=idle_timeout)
+                    except asyncio.TimeoutError:
+                        logger.info(
+                            "idle timeout (%ds) reached with no new meeting; exiting container",
+                            idle_timeout,
+                        )
+                        break
+                else:
+                    logger.info(
+                        "browser kept alive and signed in; waiting for next meeting on /join"
+                    )
+                    await next_url_event.wait()
             if queued_url:
                 current_url = queued_url.pop(0)
                 if not queued_url:
@@ -187,20 +205,45 @@ async def _run_single_meeting(
     llm = None
     joined = False
     store_closed = False
+    warm_tasks: list[asyncio.Task[None]] = []
     try:
         if notion and notion.configured:
             await notion.verify()
+
+            async def _warm_db() -> None:
+                try:
+                    await notion.database_context(refresh=True, exclude_current_meeting=True)
+                except Exception:
+                    pass
+
+            warm_tasks.append(asyncio.create_task(_warm_db()))
         llm = build_llm(settings)
+        warm_up_fn = getattr(llm, "warm_up", None)
+        if callable(warm_up_fn):
+
+            async def _warm_llm() -> None:
+                try:
+                    await warm_up_fn()
+                except Exception:
+                    pass
+
+            warm_tasks.append(asyncio.create_task(_warm_llm()))
         knowledge = KnowledgeIndex(
             resolve_path(settings.knowledge.dir), settings.knowledge.min_score
         )
         aliases = load_aliases(resolve_path(settings.speakers.aliases_file))
+        stabilizer = Stabilizer(
+            settings.captions.stable_ms,
+            aliases=aliases,
+            extra_phrases=settings.trigger.phrases,
+        )
         trigger = TriggerDetector(
             pause_wait_s=settings.trigger.pause_wait_s,
             dedup_window_s=settings.trigger.dedup_window_s,
             followup_window_s=settings.trigger.followup_window_s,
             fuzzy_threshold=settings.trigger.fuzzy_threshold,
             extra_phrases=settings.trigger.phrases,
+            is_speaker_active=stabilizer.has_open_row_for,
         )
 
         addressed_caption_ids: set[str] = set()
@@ -248,7 +291,7 @@ async def _run_single_meeting(
         async def fetch_db_context() -> str:
             parts: list[str] = []
             if notion is not None and notion.configured:
-                notion_ctx = await notion.database_context()
+                notion_ctx = await notion.database_context(exclude_current_meeting=True)
                 if notion_ctx:
                     parts.append(notion_ctx)
             local_ctx = store.stored_context()
@@ -271,9 +314,11 @@ async def _run_single_meeting(
             timeout_s=settings.llm.timeout_s,
             on_activity=status.record_activity,
             fetch_db_context=fetch_db_context,
+            participants=store.participants,
+            aliases=aliases,
         )
         bus = EventBus()
-        pump = CaptionPump(adapter.drain_caption_frames, Stabilizer(settings.captions.stable_ms))
+        pump = CaptionPump(adapter.drain_caption_frames, stabilizer)
         extractor = _Extractor(
             settings,
             llm,
@@ -282,6 +327,7 @@ async def _run_single_meeting(
             notion,
             on_change=notes_dirty.set,
             on_activity=status.record_activity,
+            aliases=aliases,
         )
         consent_posted = store.get_meta("consent_posted") == "1"
         attempts = 0
@@ -353,6 +399,11 @@ async def _run_single_meeting(
                     raise
     finally:
         _let_cleanup_finish()
+        for task in warm_tasks:
+            if not task.done():
+                task.cancel()
+        if warm_tasks:
+            await asyncio.gather(*warm_tasks, return_exceptions=True)
         status.stage = "leaving"
         switching = next_url_event is not None and next_url_event.is_set()
         has_data = joined or store.count_captions() > 0 or len(store.tasks()) > 0
@@ -405,6 +456,8 @@ async def _run_single_meeting(
             await adapter.leave()
             if notion is not None:
                 await notion.aclose()
+            if llm is not None and callable(getattr(llm, "aclose", None)):
+                await llm.aclose()
             if not store_closed:
                 store.close()
 
@@ -447,7 +500,17 @@ async def _loops(
         if notes_dirty is not None:
             notes_dirty.set()
         await bus.publish("caption_committed", line)
-        events = trigger.on_line(speaker, raw.text, "speech", raw.start_s, line.id)
+        if isinstance(trigger, TriggerDetector):
+            events = trigger.on_line(
+                speaker,
+                raw.text,
+                "speech",
+                raw.start_s,
+                line.id,
+                committed_at=raw.end_s,
+            )
+        else:
+            events = trigger.on_line(speaker, raw.text, "speech", raw.start_s, line.id)
         has_pending = (
             getattr(trigger, "pending", None) is not None
             or getattr(trigger, "_pending", None) is not None
@@ -477,8 +540,69 @@ async def _loops(
                 raw.text, today=today_in(settings.meeting.timezone)
             ) is not None:
                 extractor.note(line)
+            elif callable(getattr(extractor, "append_recent", None)):
+                extractor.append_recent(line)
+
+    async def process_chat_batch(messages) -> None:
+        for message in messages:
+            if message.is_self:
+                continue
+            speaker = normalize_speaker(message.sender, aliases)
+            if is_bot_speaker(speaker, settings.meeting.bot_name):
+                continue
+            text = message.text.strip()
+            if not text or text.startswith(settings.meeting.consent_message):
+                continue
+            now = adapter.meeting_seconds()
+            line = CaptionLine(
+                id=uuid.uuid4().hex,
+                meeting_id=store.meeting_id,
+                speaker=speaker,
+                speaker_raw=message.sender,
+                start_s=now,
+                end_s=now,
+                wall_time=datetime.now(UTC),
+                text=text,
+            )
+            recent = store.last(3)
+            if not any(r.speaker == speaker and r.text == text for r in recent):
+                store.add_caption(line)
+                if notes_dirty is not None:
+                    notes_dirty.set()
+            events = trigger.on_line(speaker, text, "chat", now, line.id)
+            if addressed_caption_ids is not None and (events or is_addressed_line(text)):
+                addressed_caption_ids.add(line.id)
+            for event in events:
+                if on_activity is not None:
+                    preview = event.question or "Hey BA"
+                    on_activity(
+                        f'Chat from {speaker}: "{preview[:60]}" — processing…',
+                        "working",
+                    )
+                trigger_queue.put_nowait(event)
+            if not events and not is_addressed_line(text):
+                extractor.note(line)
+
+    use_combined_poll = callable(getattr(adapter, "drain_poll_state", None))
 
     async def captions() -> None:
+        if use_combined_poll:
+            while not adapter.ended_event.is_set():
+                frames, chat_msgs = await adapter.drain_poll_state()
+                now = adapter.meeting_seconds()
+                push_frames = getattr(pump, "push_frames", None)
+                if callable(push_frames):
+                    committed = push_frames(frames, now)
+                else:
+                    committed = await pump.poll(now)
+                for raw in committed:
+                    await on_caption(raw)
+                if chat_msgs:
+                    await process_chat_batch(chat_msgs)
+                for event in trigger.tick(adapter.meeting_seconds()):
+                    trigger_queue.put_nowait(event)
+                await asyncio.sleep(0.22)
+            return
         while not adapter.ended_event.is_set():
             if await adapter.meeting_closed():
                 adapter.ended_event.set()
@@ -489,44 +613,7 @@ async def _loops(
 
     async def chats() -> None:
         while not adapter.ended_event.is_set():
-            for message in await adapter.collect_chat():
-                if message.is_self:
-                    continue
-                speaker = normalize_speaker(message.sender, aliases)
-                if is_bot_speaker(speaker, settings.meeting.bot_name):
-                    continue
-                text = message.text.strip()
-                if not text or text.startswith(settings.meeting.consent_message):
-                    continue
-                now = adapter.meeting_seconds()
-                line = CaptionLine(
-                    id=uuid.uuid4().hex,
-                    meeting_id=store.meeting_id,
-                    speaker=speaker,
-                    speaker_raw=message.sender,
-                    start_s=now,
-                    end_s=now,
-                    wall_time=datetime.now(UTC),
-                    text=text,
-                )
-                recent = store.last(3)
-                if not any(r.speaker == speaker and r.text == text for r in recent):
-                    store.add_caption(line)
-                    if notes_dirty is not None:
-                        notes_dirty.set()
-                events = trigger.on_line(speaker, text, "chat", now, line.id)
-                if addressed_caption_ids is not None and (events or is_addressed_line(text)):
-                    addressed_caption_ids.add(line.id)
-                for event in events:
-                    if on_activity is not None:
-                        preview = event.question or "Hey BA"
-                        on_activity(
-                            f'Chat from {speaker}: "{preview[:60]}" — processing…',
-                            "working",
-                        )
-                    trigger_queue.put_nowait(event)
-                if not events and not is_addressed_line(text):
-                    extractor.note(line)
+            await process_chat_batch(await adapter.collect_chat())
             await asyncio.sleep(0.3)
 
     async def ticks() -> None:
@@ -545,6 +632,9 @@ async def _loops(
     async def alone() -> None:
         alone_for = 0.0
         while not adapter.ended_event.is_set():
+            if await adapter.meeting_closed():
+                adapter.ended_event.set()
+                return
             others = await adapter.other_participant_count()
             alone_for = 0.0 if others != 0 else alone_for + 1
             if should_leave_alone(others, alone_for, settings.meeting.alone_timeout_s):
@@ -556,11 +646,12 @@ async def _loops(
     async def live_notes() -> None:
         if notion is None or not notion.schema.summary_db or notes_dirty is None:
             return
+        sync_interval = max(1.5, float(getattr(settings.notion, "live_sync_interval_s", 15.0)))
         while not adapter.ended_event.is_set():
             await notes_dirty.wait()
             if adapter.ended_event.is_set():
                 return
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(sync_interval)
             notes_dirty.clear()
             try:
                 await _save_live(store, notion)
@@ -569,10 +660,11 @@ async def _loops(
 
     poller_tasks = [
         asyncio.create_task(captions()),
-        asyncio.create_task(chats()),
-        asyncio.create_task(ticks()),
         asyncio.create_task(alone()),
     ]
+    if not use_combined_poll:
+        poller_tasks.append(asyncio.create_task(chats()))
+        poller_tasks.append(asyncio.create_task(ticks()))
     worker_tasks = [
         asyncio.create_task(replies()),
         asyncio.create_task(extractor.run()),
@@ -622,12 +714,17 @@ async def _save_snapshot_and_close_notion(
                 await notion.aclose()
             except Exception:
                 pass
+        if llm is not None and callable(getattr(llm, "aclose", None)):
+            try:
+                await llm.aclose()
+            except Exception:
+                pass
 
 
 async def _save_live(store: MeetingStore, notion: NotionService) -> str:
     if not notion.schema.summary_db:
         return ""
-    lines = store.last(100000)
+    lines = store.last(1500)
     tasks = store.tasks()
     if not lines and not tasks:
         return notion.summary_url
@@ -661,11 +758,24 @@ async def _save(settings, store, notion, llm, *, announce: bool, poster: Session
     return url
 
 
+def _supports_kwarg(fn, name: str) -> bool:
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    return name in sig.parameters or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+    )
+
+
 async def _summarize(llm, transcript: str, timeout_s: float) -> str:
     body = transcript.strip() if transcript and transcript.strip() else "(empty transcript)"
     prompt = f"{read_prompt('summary.md').strip()}\n\n<transcript>\n{body}\n</transcript>"
     try:
-        response = await llm.respond(prompt, enable_web_search=False, timeout_s=timeout_s)
+        kwargs: dict = {"enable_web_search": False, "timeout_s": timeout_s}
+        if _supports_kwarg(llm.respond, "max_output_tokens"):
+            kwargs["max_output_tokens"] = 600
+        response = await llm.respond(prompt, **kwargs)
         text = response.text.strip()
         if text:
             return text
@@ -719,6 +829,7 @@ class _Extractor:
         *,
         on_change=None,
         on_activity=None,
+        aliases: dict[str, str] | None = None,
     ) -> None:
         self.settings = settings
         self.llm = llm
@@ -727,10 +838,15 @@ class _Extractor:
         self.notion = notion
         self.on_change = on_change
         self.on_activity = on_activity
+        self.aliases = aliases or {}
         self.queue: asyncio.Queue = asyncio.Queue()
         self.recent: list[CaptionLine] = []
         self.seen: set[str] = set()
         self._stopped = False
+
+    def append_recent(self, line: CaptionLine) -> None:
+        self.recent.append(line)
+        self.recent = self.recent[-8:]
 
     def note(self, line: CaptionLine) -> None:
         self.queue.put_nowait(line)
@@ -785,6 +901,8 @@ class _Extractor:
                             "enable_web_search": False,
                             "timeout_s": self.settings.llm.summary_timeout_s,
                         }
+                        if _supports_kwarg(self.llm.respond, "max_output_tokens"):
+                            kwargs["max_output_tokens"] = 450
                         if self.settings.llm.task_model:
                             kwargs["model_override"] = self.settings.llm.task_model
                         response = await self.llm.respond(prompt, **kwargs)
@@ -794,6 +912,7 @@ class _Extractor:
                             said_by=line.speaker,
                             time=format_meeting_time(line.start_s),
                             today=today,
+                            aliases=self.aliases,
                         )
                     except Exception:
                         logger.exception("task extract failed")
@@ -802,6 +921,7 @@ class _Extractor:
                             said_by=line.speaker,
                             time=format_meeting_time(line.start_s),
                             today=today,
+                            aliases=self.aliases,
                         )
                     if records:
                         self.recent.clear()
@@ -810,7 +930,8 @@ class _Extractor:
                     for record in records:
                         if self.on_activity is not None:
                             self.on_activity(
-                                f"Creating overheard task in Notion: {record.task} ({record.owner})…",
+                                f"Creating overheard task in Notion: "
+                                f"{record.task} ({record.owner})…",
                                 "working",
                             )
                         result = await self.notion.create_task(record)

@@ -8,7 +8,10 @@ from rapidfuzz import fuzz
 
 _EDGE = ".,!?;:\"'()[]{}“”…—-"
 _SENTENCE_END_CHARS = ".?!;"
-_ABBREV_WORDS = {"mr", "mrs", "ms", "dr", "vs", "st", "jr", "sr", "inc", "ltd", "co", "eg", "ie", "us", "uk"}
+_ABBREV_WORDS = {
+    "mr", "mrs", "ms", "dr", "vs", "st", "jr", "sr",
+    "inc", "ltd", "co", "eg", "ie", "us", "uk",
+}
 _IMMEDIATE_ONE_WORD = {
     "leave",
     "exit",

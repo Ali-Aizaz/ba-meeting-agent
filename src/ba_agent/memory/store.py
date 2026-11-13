@@ -76,6 +76,8 @@ class MeetingStore:
             );
             CREATE INDEX IF NOT EXISTS idx_captions_meeting_start
                 ON captions (meeting_id, start_s DESC, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_captions_wall_time
+                ON captions (wall_time DESC, start_s DESC);
             CREATE INDEX IF NOT EXISTS idx_replies_meeting
                 ON replies (meeting_id, id DESC);
             """
@@ -256,15 +258,19 @@ class MeetingStore:
         return [str(row["speaker"]) for row in rows]
 
     def digest(self, max_tokens: int = 3000) -> str:
-        lines = self.last(100000)
+        row_limit = min(1000, max(120, max_tokens // 4))
+        lines = self.last(row_limit)
         task_rows = self.tasks()
         speakers = self.participants()
         replies = self.recent_replies(limit=5)
         header = "Participants: " + (", ".join(speakers) if speakers else "none")
         if task_rows:
-            task_block = "Tasks:\n" + "\n".join(
-                f"- {task.owner}: {task.task} ({task.due_text})" for task in task_rows
-            )
+            rendered_tasks: list[str] = []
+            for task in task_rows:
+                due_str = task.due.isoformat() if task.due else (task.due_text or "unscheduled")
+                status_str = f" [{task.status}]" if task.status else ""
+                rendered_tasks.append(f"- {task.owner}: {task.task} (due: {due_str}){status_str}")
+            task_block = "Tasks:\n" + "\n".join(rendered_tasks)
         else:
             task_block = "Tasks:\nnone"
         reply_block = (

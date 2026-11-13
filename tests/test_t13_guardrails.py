@@ -147,4 +147,132 @@ def test_t13_prompt_files_and_speaker_date_context() -> None:
     assert "<question>what tasks are assigned to me?</question>" in rendered
 
 
+def test_citation_source_verification_and_grounded_auto_citation() -> None:
+    import asyncio
+    from datetime import date
+
+    from ba_agent.agent.loop import AgentLoop
+    from ba_agent.guardrails.citations import (
+        numbers_grounded_in_context,
+        verify_reply_sources,
+    )
+    from ba_agent.knowledge.search import Chunk
+    from ba_agent.models import LLMResponse, TriggerEvent, WebResult
+    from ba_agent.notion.client import TaskWrite
+    from ba_agent.trigger.detector import TriggerDetector
+
+    # Rejects fabricated local file citations not present in retrieved hits.
+    assert verify_reply_sources("BEV packs run at 400V (src: fake.md).", ["ev.md"], []) is False
+    assert verify_reply_sources("BEV packs run at 400V (src: ev.md).", ["ev.md"], []) is True
+    assert (
+        verify_reply_sources(
+            "RAV4 starts at $32,850 (src: https://edmunds.com/toyota/rav4).",
+            [],
+            ["https://www.edmunds.com/toyota/rav4/?utm_source=openai"],
+        )
+        is True
+    )
+    assert (
+        verify_reply_sources(
+            "RAV4 overview (https://en.wikipedia.org/wiki/Toyota_RAV4_(XA50)).",
+            [],
+            ["https://en.wikipedia.org/wiki/Toyota_RAV4_(XA50)"],
+        )
+        is True
+    )
+    assert (
+        verify_reply_sources(
+            "CR-V starts at $31,000 (https://edmunds.com/honda/cr-v).",
+            [],
+            ["https://www.edmunds.com/toyota/rav4/?utm_source=openai"],
+        )
+        is False
+    )
+
+    # "Model 3 v Model Y" must not trigger numeric voltage grounding on "3 v".
+    from ba_agent.guardrails.citations import has_precise_number
+
+    assert has_precise_number("I'm not sure about Model 3 v Model Y.") is False
+    assert has_precise_number("Architecture runs at 400V.") is True
+    assert has_precise_number("Mild hybrids run at 48 volts.") is True
+
+    # Rejects ungrounded numeric claims while accepting numbers grounded in context.
+    ctx = "800V EV architectures cut DC fast-charging losses by 40% vs 400V systems."
+    assert numbers_grounded_in_context("800V packs charge faster at $29,990.", ctx) is False
+    assert numbers_grounded_in_context("800V cuts losses by 40% over 400V.", ctx) is True
+
+    # Deterministic auto-citation in AgentLoop when a single hit grounds all numbers.
+    class _SingleChunkKB:
+        def search(self, _query: str):
+            return [Chunk(file="ev.md", heading="800V", text=ctx, score=0.9)]
+
+    class _UncitedOnceLLM:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def respond(self, input, tools=None, *, enable_web_search=False, timeout_s=None):
+            del input, tools, enable_web_search, timeout_s
+            self.calls += 1
+            return LLMResponse(text="800V packs cut losses by 40% compared to 400V systems.")
+
+    posts: list[str] = []
+
+    async def fake_post(text: str, _reason, trigger_id=None) -> bool:
+        del trigger_id
+        posts.append(text)
+        return True
+
+    async def no_web(_q: str) -> WebResult:
+        return WebResult()
+
+    async def no_task(_rec):
+        return TaskWrite(True, "ok")
+
+    async def no_save() -> str:
+        return "https://www.notion.so/p1"
+
+    async def no_leave() -> None:
+        return None
+
+    llm = _UncitedOnceLLM()
+    agent = AgentLoop(
+        knowledge=_SingleChunkKB(),  # type: ignore[arg-type]
+        search_cars=no_web,
+        llm=llm,
+        create_task=no_task,
+        save_meeting=no_save,
+        post=fake_post,
+        trigger=TriggerDetector(pause_wait_s=5, dedup_window_s=3, followup_window_s=20),
+        leave=no_leave,
+        digest=lambda: "",
+        today=lambda: date(2026, 4, 15),
+        min_score=0.5,
+        timeout_s=5,
+    )
+    asyncio.run(
+        agent.handle(
+            TriggerEvent(
+                trigger_id="t_cite",
+                question="what are the benefits of an 800V EV architecture?",
+                speaker="Sara",
+                source="speech",
+                t_detected=1.0,
+            )
+        )
+    )
+    assert llm.calls == 1
+    assert "(src: ev.md)" in posts[-1]
+
+    # Rejects fabricated citation even on second pass.
+    rejected = finalize_reply(
+        "The model starts at $32,000 (src: hallucinated.md).",
+        "Still $32,000 (src: hallucinated.md).",
+        allowed_files=["ev.md"],
+        allowed_urls=[],
+        context_text=ctx,
+    )
+    assert rejected == NOT_SURE
+
+
+
 

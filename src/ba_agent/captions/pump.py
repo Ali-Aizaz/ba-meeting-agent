@@ -18,6 +18,9 @@ class CaptionPump:
 
     async def poll(self, now: float) -> list[RawCaption]:
         frames = await self.drain()
+        return self.push_frames(frames, now)
+
+    def push_frames(self, frames: list[list[CaptionRow]], now: float) -> list[RawCaption]:
         committed: list[RawCaption] = []
         for frame in frames:
             committed.extend(self.stabilizer.push_frame(frame, now))

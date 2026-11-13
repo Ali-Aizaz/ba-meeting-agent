@@ -6,8 +6,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from datetime import date, datetime
-from zoneinfo import ZoneInfo
+from datetime import date
 
 import httpx
 
@@ -22,9 +21,13 @@ from ba_agent.notion.schema import (
     summary_properties,
     task_properties,
 )
+from ba_agent.tasks_extract.dates import today_in
 from ba_agent.tasks_extract.extractor import dedup_key
 
 logger = logging.getLogger("ba_agent.notion")
+
+_FRESH_CACHE_TTL_S = 120.0
+_STALE_CACHE_TTL_S = 600.0
 
 
 @dataclass
@@ -36,9 +39,13 @@ class TaskWrite:
 
 
 class _Limiter:
-    def __init__(self, min_interval: float) -> None:
+    """Token-bucket rate limiter (burst=2) keeping 3 req/s sustained average."""
+
+    def __init__(self, min_interval: float, burst: int = 2) -> None:
         self.min_interval = min_interval
-        self._next = 0.0
+        self.capacity = float(max(1, burst))
+        self.tokens = self.capacity
+        self.updated_at = time.monotonic()
         self._lock = asyncio.Lock()
 
     async def wait(self) -> None:
@@ -46,9 +53,16 @@ class _Limiter:
             return
         async with self._lock:
             now = time.monotonic()
-            if now < self._next:
-                await asyncio.sleep(self._next - now)
-            self._next = time.monotonic() + self.min_interval
+            elapsed = max(0.0, now - self.updated_at)
+            self.tokens = min(self.capacity, self.tokens + elapsed / self.min_interval)
+            self.updated_at = now
+            if self.tokens >= 1.0:
+                self.tokens -= 1.0
+                return
+            sleep_for = (1.0 - self.tokens) * self.min_interval
+            await asyncio.sleep(sleep_for)
+            self.tokens = 0.0
+            self.updated_at = time.monotonic()
 
 
 class NotionService:
@@ -75,6 +89,8 @@ class NotionService:
         self._tasks_loaded_at: float = 0.0
         self._summaries_cache: list[dict] = []
         self._summaries_loaded_at: float = 0.0
+        self._bg_tasks_refresh: asyncio.Task[list[TaskRecord]] | None = None
+        self._bg_summaries_refresh: asyncio.Task[list[dict]] | None = None
         self._transcript_appended: bool = False
         self.task_parent: dict = {"database_id": schema.tasks_db} if schema.tasks_db else {}
         self.summary_parent: dict = {"database_id": schema.summary_db} if schema.summary_db else {}
@@ -95,6 +111,9 @@ class NotionService:
         return bool(self.schema.tasks_db or self.schema.summary_db)
 
     async def aclose(self) -> None:
+        for task in (self._bg_tasks_refresh, self._bg_summaries_refresh):
+            if task is not None and not task.done():
+                task.cancel()
         await self._http.aclose()
 
     async def verify(self) -> None:
@@ -117,7 +136,7 @@ class NotionService:
             return self.summary_url
         if not self.schema.summary_db:
             return ""
-        day = datetime.now(ZoneInfo(self.timezone_name)).date()
+        day = today_in(self.timezone_name)
         payload = {
             "parent": self.summary_parent,
             "properties": summary_properties(
@@ -309,12 +328,14 @@ class NotionService:
         if not self.schema.tasks_db:
             return []
         now = time.monotonic()
-        if (
-            not refresh
-            and self._tasks_loaded
-            and (self._tasks_loaded_at == 0.0 or now - self._tasks_loaded_at < 30.0)
-        ):
-            return list(self._task_records.values())
+        if not refresh and self._tasks_loaded:
+            age = now - self._tasks_loaded_at
+            if self._tasks_loaded_at == 0.0 or age < _FRESH_CACHE_TTL_S:
+                return list(self._task_records.values())
+            if age < _STALE_CACHE_TTL_S:
+                if self._bg_tasks_refresh is None or self._bg_tasks_refresh.done():
+                    self._bg_tasks_refresh = asyncio.create_task(self.list_tasks(refresh=True))
+                return list(self._task_records.values())
         cursor = None
         records: dict[str, TaskRecord] = {}
         try:
@@ -330,11 +351,10 @@ class NotionService:
                     if rec is not None:
                         k = row_key or (page_id or rec.task)
                         records[k] = rec
-                        if row_key:
-                            self._task_records[row_key] = rec
                 if not data.get("has_more"):
                     break
                 cursor = data.get("next_cursor")
+            self._task_records = dict(records)
             self._tasks_loaded = True
             self._tasks_loaded_at = time.monotonic()
         except Exception:
@@ -346,15 +366,23 @@ class NotionService:
         if not self.schema.summary_db:
             return []
         now = time.monotonic()
-        if (
-            not refresh
-            and self._summaries_cache
-            and now - self._summaries_loaded_at < 30.0
-        ):
-            return self._summaries_cache[:limit]
+        if not refresh and self._summaries_loaded_at > 0:
+            age = now - self._summaries_loaded_at
+            if age < _FRESH_CACHE_TTL_S:
+                return self._summaries_cache[:limit]
+            if age < _STALE_CACHE_TTL_S:
+                if self._bg_summaries_refresh is None or self._bg_summaries_refresh.done():
+                    self._bg_summaries_refresh = asyncio.create_task(
+                        self.list_summaries(refresh=True, limit=max(limit, 25))
+                    )
+                return self._summaries_cache[:limit]
         summaries: list[dict] = []
+        fetch_limit = max(limit, 25)
         try:
-            body: dict = {"page_size": min(100, max(limit * 2, 20))}
+            body: dict = {
+                "page_size": min(100, max(fetch_limit * 2, 20)),
+                "sorts": [{"timestamp": "created_time", "direction": "descending"}],
+            }
             data = await self._request("POST", f"/databases/{self.schema.summary_db}/query", body)
             for page in data.get("results") or []:
                 parsed = self._parse_summary_page(page)
@@ -369,7 +397,7 @@ class NotionService:
                 if not parsed["summary"] and not parsed["transcript"]:
                     continue
                 summaries.append(parsed)
-                if len(summaries) >= limit:
+                if len(summaries) >= fetch_limit:
                     break
             self._summaries_cache = summaries
             self._summaries_loaded_at = time.monotonic()
@@ -387,9 +415,15 @@ class NotionService:
         refresh: bool = False,
         max_tasks: int = 50,
         max_summaries: int = 15,
+        exclude_current_meeting: bool = False,
     ) -> str:
         sections: list[str] = []
-        tasks = await self.list_tasks(refresh=refresh)
+        extra_current = 1 if exclude_current_meeting and self.summary_page_id else 0
+        summary_limit = max_summaries + extra_current
+        tasks, summaries = await asyncio.gather(
+            self.list_tasks(refresh=refresh),
+            self.list_summaries(refresh=refresh, limit=summary_limit),
+        )
         if tasks:
             lines: list[str] = []
             for t in tasks[:max_tasks]:
@@ -398,21 +432,47 @@ class NotionService:
                 by_str = f" (said by {t.said_by})" if t.said_by else ""
                 lines.append(f"- {t.owner}: {t.task} (due: {due_str}){status_str}{by_str}")
             sections.append("Stored Notion Tasks:\n" + "\n".join(lines))
-        summaries = await self.list_summaries(refresh=refresh, limit=max_summaries)
+        if exclude_current_meeting and self.summary_page_id:
+            summaries = [s for s in summaries if s.get("id") != self.summary_page_id]
+        summaries = summaries[:max_summaries]
         if summaries:
             s_lines: list[str] = []
             for item in summaries:
                 header = f"{item['title']} ({item['date']})" if item["date"] else item["title"]
                 summary_clean = " ".join(item["summary"].split())
                 transcript_clean = " ".join(item["transcript"].split())
-                if len(transcript_clean) > 600:
-                    transcript_clean = transcript_clean[:600] + "…"
+                if len(transcript_clean) > 1200:
+                    transcript_clean = transcript_clean[:1200] + "…"
                 entry = f"- {header}: {summary_clean}"
                 if transcript_clean and transcript_clean != "Waiting for captions…":
                     entry += f" | Transcript: {transcript_clean}"
                 s_lines.append(entry)
             sections.append("Stored Notion Meeting Notes:\n" + "\n".join(s_lines))
         return "\n".join(sections)
+
+    def _upsert_summary_cache(
+        self,
+        *,
+        page_id: str,
+        url: str,
+        title: str,
+        day: date,
+        summary_text: str,
+        note: str,
+    ) -> None:
+        if not page_id:
+            return
+        entry = {
+            "id": page_id,
+            "url": url,
+            "title": title,
+            "date": day.isoformat(),
+            "summary": summary_text,
+            "transcript": note or "",
+        }
+        updated = [item for item in self._summaries_cache if item.get("id") != page_id]
+        self._summaries_cache = [entry, *updated]
+        self._summaries_loaded_at = time.monotonic()
 
     async def save_meeting(
         self,
@@ -424,7 +484,7 @@ class NotionService:
     ) -> str:
         if not self.schema.summary_db:
             raise StartupError("Notion summary database is not configured")
-        day = datetime.now(ZoneInfo(self.timezone_name)).date()
+        day = today_in(self.timezone_name)
         title = f"TechSol BA {day.isoformat()} {self.meeting_id}"
         task_lines = "\n".join(f"- {task.owner}: {task.task} ({task.due_text})" for task in tasks)
         summary_text = summary.strip()
@@ -439,7 +499,6 @@ class NotionService:
             transcript_note=note or "Transcript is in the toggle.",
         )
         children = _transcript_toggle(transcript)
-        self._summaries_loaded_at = 0.0
         if not self.summary_page_id:
             payload: dict = {"parent": self.summary_parent, "properties": properties}
             if append_children:
@@ -449,6 +508,15 @@ class NotionService:
             self.summary_url = created.get("url", "")
             if append_children:
                 self._transcript_appended = True
+                if self._summaries_loaded_at > 0:
+                    self._upsert_summary_cache(
+                        page_id=self.summary_page_id,
+                        url=self.summary_url,
+                        title=title,
+                        day=day,
+                        summary_text=summary_text,
+                        note=note,
+                    )
             return self.summary_url
         await self._request(
             "PATCH",
@@ -462,6 +530,15 @@ class NotionService:
                 {"children": children},
             )
             self._transcript_appended = True
+        if append_children and self._summaries_loaded_at > 0:
+            self._upsert_summary_cache(
+                page_id=self.summary_page_id,
+                url=self.summary_url,
+                title=title,
+                day=day,
+                summary_text=summary_text,
+                note=note,
+            )
         return self.summary_url
 
     def saved_message(self) -> str:
@@ -508,9 +585,32 @@ def _parent(database: dict, database_id: str) -> dict:
 
 def _transcript_toggle(transcript: str) -> list[dict]:
     lines = transcript.splitlines() or ["(no transcript)"]
-    children = [_paragraph(line) for line in lines[:80]]
-    if len(lines) > 80:
-        children.append(_paragraph(f"... {len(lines) - 80} more lines are in the local transcript"))
+    if len(lines) <= 80:
+        children = [_paragraph(line) for line in lines]
+    else:
+        children = []
+        buf: list[str] = []
+        buf_len = 0
+        for idx, line in enumerate(lines):
+            chunk_line = line[:1800]
+            sep = 1 if buf else 0
+            if buf and buf_len + sep + len(chunk_line) > 1800:
+                children.append(_paragraph("\n".join(buf)))
+                buf = []
+                buf_len = 0
+                if len(children) >= 95:
+                    children.append(
+                        _paragraph(
+                            f"... {len(lines) - idx} more lines are in the local transcript"
+                        )
+                    )
+                    break
+                sep = 0
+            buf.append(chunk_line)
+            buf_len += sep + len(chunk_line)
+        else:
+            if buf and len(children) < 95:
+                children.append(_paragraph("\n".join(buf)))
     return [
         {
             "object": "block",
@@ -532,4 +632,4 @@ def _paragraph(text: str) -> dict:
 
 
 def notion_today(timezone_name: str) -> date:
-    return datetime.now(ZoneInfo(timezone_name)).date()
+    return today_in(timezone_name)

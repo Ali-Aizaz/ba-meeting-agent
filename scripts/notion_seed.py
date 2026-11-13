@@ -53,25 +53,33 @@ SEED_MEETINGS: tuple[SeedMeeting, ...] = (
         day=date(2026, 10, 20),
         summary=(
             "Reviewed mid-size crossover powertrain options (full HEV vs 48V mild hybrid vs BEV). "
-            "Team aligned on evaluating the full hybrid (HEV) architecture with regenerative braking "
-            "for city stop-and-go efficiency while keeping highway engine efficiency, and comparing "
-            "LFP vs NMC battery packs for the EV variant.\n\n"
+            "Team aligned on evaluating the full hybrid (HEV) architecture with regenerative "
+            "braking for city stop-and-go efficiency while keeping highway engine efficiency, "
+            "and comparing LFP vs NMC battery packs for the EV variant.\n\n"
             "Tasks:\n"
             "- Ali: benchmark LFP vs NMC cold-weather range curves (2026-10-22)\n"
-            "- Sara: compile regenerative braking efficiency metrics from city cycle tests (2026-10-23)\n"
+            "- Sara: compile regenerative braking efficiency metrics from city cycle tests "
+            "(2026-10-23)\n"
             "- Omar: request inverter thermal specs from Tier-1 supplier (2026-10-24)"
         ),
         transcript=(
             "[00:12] Sara: Welcome everyone to the Q4 crossover powertrain kickoff.\n"
-            "[00:28] Ali: Today we need to narrow down whether our baseline trim uses a 48V mild hybrid or a full HEV.\n"
-            "[00:54] Omar: Hey BA, what is the difference between a mild hybrid and a full hybrid?\n"
-            "[00:58] TechSol BA: A mild hybrid (MHEV) uses a small 48V battery and starter-generator to assist the engine "
-            "but cannot drive on electric power alone, whereas a full hybrid (HEV) can propel the car short distances at low speed "
+            "[00:28] Ali: Today we need to narrow down whether our baseline trim uses a 48V "
+            "mild hybrid or a full HEV.\n"
+            "[00:54] Omar: Hey BA, what is the difference between a mild hybrid and a full "
+            "hybrid?\n"
+            "[00:58] TechSol BA: A mild hybrid (MHEV) uses a small 48V battery and "
+            "starter-generator to assist the engine but cannot drive on electric power alone, "
+            "whereas a full hybrid (HEV) can propel the car short distances at low speed "
             "on electric power alone (src: hybrid.md).\n"
-            "[01:35] Sara: That electric-only low-speed mode is critical for our urban fleet targets.\n"
-            "[02:10] Sara: Ali, please benchmark LFP vs NMC cold-weather range curves by Thursday.\n"
-            "[02:45] Ali: Will do. Sara, can you compile regenerative braking efficiency metrics from city cycle tests by Friday?\n"
-            "[03:20] Sara: Sure. Also, Omar, please request inverter thermal specs from the Tier-1 supplier by Oct 24."
+            "[01:35] Sara: That electric-only low-speed mode is critical for our urban fleet "
+            "targets.\n"
+            "[02:10] Sara: Ali, please benchmark LFP vs NMC cold-weather range curves "
+            "by Thursday.\n"
+            "[02:45] Ali: Will do. Sara, can you compile regenerative braking efficiency metrics "
+            "from city cycle tests by Friday?\n"
+            "[03:20] Sara: Sure. Also, Omar, please request inverter thermal specs from the "
+            "Tier-1 supplier by Oct 24."
         ),
         tasks=(
             SeedTask(
@@ -107,21 +115,29 @@ SEED_MEETINGS: tuple[SeedMeeting, ...] = (
         title="TechSol BA 2026-10-23 chassis-and-safety-review",
         day=date(2026, 10, 23),
         summary=(
-            "Evaluated unibody vs body-on-frame chassis tradeoffs and Euro NCAP 5-star active safety requirements. "
-            "Confirmed unibody (monocoque) construction with MacPherson front and multi-link rear suspension, "
-            "plus standard ADAS suite (AEB, ACC, LKA, BSM) across all trims.\n\n"
+            "Evaluated unibody vs body-on-frame chassis tradeoffs and Euro NCAP 5-star active "
+            "safety requirements. Confirmed unibody (monocoque) construction with MacPherson "
+            "front and multi-link rear suspension, plus standard ADAS suite "
+            "(AEB, ACC, LKA, BSM) across all trims.\n\n"
             "Tasks:\n"
             "- Nadia: finalize Euro NCAP vulnerable road user sensor placement (2026-10-28)\n"
-            "- Omar: validate multi-link rear suspension packaging with AWD drivetrain (2026-10-29)\n"
+            "- Omar: validate multi-link rear suspension packaging with AWD drivetrain "
+            "(2026-10-29)\n"
             "- Ali: review AEB radar calibration budget with procurement (2026-10-29)"
         ),
         transcript=(
-            "[00:18] Ali: Let's review the body and chassis architecture and safety targets for the crossover.\n"
-            "[00:45] Nadia: We are targeting a 5-star Euro NCAP rating across adult occupant, child occupant, pedestrian, and safety assist.\n"
-            "[01:15] Omar: For the chassis, unibody gives us lower weight and better crash energy absorption with crumple zones.\n"
-            "[01:52] Ali: Nadia, please finalize Euro NCAP vulnerable road user sensor placement by October 28.\n"
-            "[02:30] Nadia: Got it. Omar, please validate multi-link rear suspension packaging with the AWD drivetrain by October 29.\n"
-            "[03:05] Sara: Ali, please review the AEB radar calibration budget with procurement by Thursday."
+            "[00:18] Ali: Let's review the body and chassis architecture and safety targets "
+            "for the crossover.\n"
+            "[00:45] Nadia: We are targeting a 5-star Euro NCAP rating across adult occupant, "
+            "child occupant, pedestrian, and safety assist.\n"
+            "[01:15] Omar: For the chassis, unibody gives us lower weight and better crash energy "
+            "absorption with crumple zones.\n"
+            "[01:52] Ali: Nadia, please finalize Euro NCAP vulnerable road user sensor placement "
+            "by October 28.\n"
+            "[02:30] Nadia: Got it. Omar, please validate multi-link rear suspension packaging "
+            "with the AWD drivetrain by October 29.\n"
+            "[03:05] Sara: Ali, please review the AEB radar calibration budget with procurement "
+            "by Thursday."
         ),
         tasks=(
             SeedTask(
@@ -157,18 +173,25 @@ SEED_MEETINGS: tuple[SeedMeeting, ...] = (
         title="TechSol BA 2026-10-26 competitor-benchmark-sync",
         day=date(2026, 10, 26),
         summary=(
-            "Benchmarked Toyota RAV4 Hybrid and Nissan Leaf reference specs against our target BOM. "
-            "Discussed Level 2 AC onboard charging vs DC fast charging curves and cabin acoustics.\n\n"
+            "Benchmarked Toyota RAV4 Hybrid and Nissan Leaf reference specs against our target "
+            "BOM. Discussed Level 2 AC onboard charging vs DC fast charging curves and cabin "
+            "acoustics.\n\n"
             "Tasks:\n"
-            "- Sara: prepare Q4 executive comparison deck for Toyota RAV4 Hybrid vs our HEV trim (2026-10-30)\n"
+            "- Sara: prepare Q4 executive comparison deck for Toyota RAV4 Hybrid vs our HEV trim "
+            "(2026-10-30)\n"
             "- Nadia: schedule DC fast-charger thermal validation lab slot (2026-11-02)"
         ),
         transcript=(
-            "[00:10] Sara: Quick sync on competitor benchmarking before Friday's steering committee.\n"
-            "[00:42] Ali: We compared the Toyota RAV4 Hybrid AWD system and the Nissan Leaf BEV charging architecture.\n"
-            "[01:20] Nadia: On the BEV side, bypassing the onboard charger during DC fast charging keeps our 10-to-80% target under 30 minutes.\n"
-            "[02:05] Ali: Sara, please prepare the Q4 executive comparison deck for Toyota RAV4 Hybrid vs our HEV trim by Friday.\n"
-            "[02:50] Sara: Nadia, can you schedule the DC fast-charger thermal validation lab slot by November 2?"
+            "[00:10] Sara: Quick sync on competitor benchmarking before Friday's steering "
+            "committee.\n"
+            "[00:42] Ali: We compared the Toyota RAV4 Hybrid AWD system and the Nissan Leaf BEV "
+            "charging architecture.\n"
+            "[01:20] Nadia: On the BEV side, bypassing the onboard charger during DC fast "
+            "charging keeps our 10-to-80% target under 30 minutes.\n"
+            "[02:05] Ali: Sara, please prepare the Q4 executive comparison deck for Toyota RAV4 "
+            "Hybrid vs our HEV trim by Friday.\n"
+            "[02:50] Sara: Nadia, can you schedule the DC fast-charger thermal validation lab "
+            "slot by November 2?"
         ),
         tasks=(
             SeedTask(
@@ -209,7 +232,10 @@ def _load_dotenv(env_path: Path) -> None:
         os.environ.setdefault(key, value)
 
 
-async def _existing_summaries(service: NotionService, schema: NotionSchema) -> dict[str, tuple[str, str]]:
+async def _existing_summaries(
+    service: NotionService,
+    schema: NotionSchema,
+) -> dict[str, tuple[str, str]]:
     """Return {title: (page_id, url)} for pages currently in the summary database."""
     title_prop = schema.summary_props["title"].name
     found: dict[str, tuple[str, str]] = {}
@@ -257,12 +283,15 @@ async def seed_notion(*, reset: bool = False) -> None:
     _load_dotenv(Path(".env"))
     token = os.environ.get("BA_NOTION__TOKEN", "").strip()
     schema = load_notion_schema(resolve_path("config/notion_schema.yaml"))
-    schema.summary_db = os.environ.get("BA_NOTION__DATABASES__SUMMARY", "").strip() or schema.summary_db
+    schema.summary_db = (
+        os.environ.get("BA_NOTION__DATABASES__SUMMARY", "").strip() or schema.summary_db
+    )
     schema.tasks_db = os.environ.get("BA_NOTION__DATABASES__TASKS", "").strip() or schema.tasks_db
 
     if not token or not schema.summary_db or not schema.tasks_db:
         raise SystemExit(
-            "Missing BA_NOTION__TOKEN, BA_NOTION__DATABASES__SUMMARY, or BA_NOTION__DATABASES__TASKS"
+            "Missing BA_NOTION__TOKEN, BA_NOTION__DATABASES__SUMMARY, "
+            "or BA_NOTION__DATABASES__TASKS"
         )
 
     service = NotionService(token=token, schema=schema, meeting_id="seed")

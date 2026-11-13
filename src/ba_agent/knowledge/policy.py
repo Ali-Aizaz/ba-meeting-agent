@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
+from typing import Literal
 
 from ba_agent.knowledge.search import Chunk, KnowledgeIndex
 from ba_agent.models import WebResult
@@ -34,10 +36,9 @@ _CURRENT = (
     "how fast",
     "0-60",
     "top speed",
-    "epa",
-    "wltp",
     "towing",
 )
+_CYCLE_CURRENT = ("epa", "wltp")
 _BRANDS = (
     "toyota",
     "honda",
@@ -231,7 +232,10 @@ _WEB_INTENT = re.compile(
 
 _MEETING_PATTERNS = (
     re.compile(r"\bwhat\s+did\s+we\b", re.I),
-    re.compile(r"\bdid\s+we\s+(?:decide|agree|say|discuss|pick|choose|talk|assign|create|have)\b", re.I),
+    re.compile(
+        r"\bdid\s+we\s+(?:decide|agree|say|discuss|pick|choose|talk|assign|create|have)\b",
+        re.I,
+    ),
     re.compile(
         r"\b(?:our|the|all|any|open|pending|current|stored|saved|existing|previous|past|last|earlier)\s+"
         r"(?:decision|decisions|task|tasks|action\s+items?|meeting|meetings|summary|summaries|notes)\b",
@@ -257,8 +261,27 @@ _MEETING_PATTERNS = (
         r"\bwhat\s+(?:is|are)\s+[a-z]+\s+(?:working\s+on|assigned\s+to|doing|responsible\s+for)\b",
         re.I,
     ),
-    re.compile(r"\bwhat\s+did\s+[a-z]+\s+(?:say|mention|ask|propose|agree|do|finish|complete)\b", re.I),
-    re.compile(r"\bdid\s+[a-z]+\s+(?:finish|complete|send|prepare|review|update|schedule|request|validate|finalize|benchmark)\b", re.I),
+    re.compile(
+        r"\bwhat\s+did\s+[a-z]+\s+(?:say|mention|ask|propose|agree|do|finish|complete)\b",
+        re.I,
+    ),
+    re.compile(
+        r"\b(?:did|has|have|is|was|were)\s+[a-z]+\s+"
+        r"(?:finish|finished|complete|completed|send|sent|prepare|prepared|review|reviewed|"
+        r"update|updated|schedule|scheduled|request|requested|validate|validated|"
+        r"finalize|finalized|working|assigned|benchmark|benchmarked)\b",
+        re.I,
+    ),
+    re.compile(
+        r"\bwhat\s+(?:[\w-]+\s+){0,3}(?:did|have|do)\s+we\s+"
+        r"(?:set|decide|agree|say|discuss|pick|choose|target|lock|plan|budget)\b",
+        re.I,
+    ),
+    re.compile(
+        r"\b(?:budget|shortlist|procurement|tier-1|supplier|deliverable|milestone|"
+        r"blocker|timeline|kickoff|benchmark\s+sync|action\s+item|lab\s+slot|slide\s+deck)\b",
+        re.I,
+    ),
     re.compile(
         r"\b(?:in|from|during|about|check)\s+(?:this|the\s+last|the\s+previous|our\s+last|our\s+previous|earlier|past|previous|last)\s+meetings?\b",
         re.I,
@@ -288,13 +311,72 @@ _MEETING_PATTERNS = (
 )
 
 
+_GENERIC_PARTICIPANTS = {
+    "unknown",
+    "speaker",
+    "you",
+    "bot",
+    "techsol",
+    "guest",
+    "host",
+    "moderator",
+}
+_HYBRID_COMPARE = re.compile(r"\b(?:compare|comparison|versus|vs\.?)\b", re.I)
+_HYBRID_MEETING_CUE = re.compile(
+    r"\b(?:we\s+discussed|we\s+set|our\s+budget|the\s+budget|our\s+target|"
+    r"we\s+agreed|we\s+chose|our\s+shortlist)\b",
+    re.I,
+)
+
+
+_CURRENT_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(m) for m in _CURRENT) + r")(?:\b|(?=\s|$))",
+    re.I,
+)
+_ELECTRICAL_CURRENT_RE = re.compile(
+    r"\b(?:electric(?:al)?|alternating|direct|ac|dc|lower|higher|high|low|"
+    r"charging|resistive|eddy|peak|nominal)\s+current\b",
+    re.I,
+)
+_MODEL_YEAR_RE = re.compile(
+    r"\b20(?:1[89]|2\d|3\d)\b(?!\s*(?:kg|lbs?|rpm|km|mi|miles|wh|kwh|kw|v|volts?|nm|hp|mm)\b)",
+    re.I,
+)
+_SPECIAL_MODELS_RE = re.compile(
+    r"\b(?:model\s+[3ysx]|id\.[347]|mach-e|e-tron|bz4x)\b",
+    re.I,
+)
+
+
+def _has_model_or_brand(text: str) -> bool:
+    if _MODEL_YEAR_RE.search(text):
+        return True
+    if _SPECIAL_MODELS_RE.search(text):
+        return True
+    return any(re.search(rf"\b{re.escape(brand)}\b", text) for brand in _BRANDS)
+
+
+def _mentions_participant(query: str, participants: Iterable[str] | None) -> bool:
+    if not participants:
+        return False
+    q_low = query.lower()
+    car_vocab = set(_CAR_WORDS) | {"car", "cars", "hybrid", "electric"}
+    for name in participants:
+        for token in re.findall(r"[a-z]{3,}", str(name).lower()):
+            if token in _GENERIC_PARTICIPANTS or token in car_vocab:
+                continue
+            if re.search(rf"\b{re.escape(token)}\b", q_low):
+                return True
+    return False
+
+
 def is_meeting_question(query: str) -> bool:
     return any(pattern.search(query) is not None for pattern in _MEETING_PATTERNS)
 
 
 def has_car_topic(query: str) -> bool:
     text = query.lower()
-    if re.search(r"\bmodel\s+[3ysx]\b", text):
+    if _SPECIAL_MODELS_RE.search(text):
         return True
     return any(re.search(rf"\b{re.escape(word)}\b", text) for word in _CAR_WORDS)
 
@@ -305,13 +387,39 @@ def needs_current_fact(query: str) -> bool:
     if _WEB_INTENT.search(query) is not None:
         return True
     text = query.lower()
-    if any(marker in text for marker in _CURRENT):
+    scrubbed = _ELECTRICAL_CURRENT_RE.sub(" ", text)
+    if _CURRENT_RE.search(scrubbed) is not None:
         return True
-    if re.search(r"\b20\d{2}\b", text):
+    if _has_model_or_brand(text):
         return True
-    if re.search(r"\bmodel\s+[3ysx]\b", text):
-        return True
-    return any(re.search(rf"\b{re.escape(brand)}\b", text) for brand in _BRANDS)
+    return False
+
+
+def classify_query_intent(
+    query: str,
+    hits: list[Chunk],
+    participants: Iterable[str] | None = None,
+) -> Literal["car", "meeting", "hybrid"]:
+    """Classify a query as pure 'car', 'meeting', or 'hybrid' (car + meeting context)."""
+    meeting = is_meeting_question(query) or _mentions_participant(query, participants)
+    car_topic = bool(hits) or has_car_topic(query)
+    if car_topic and (
+        (_HYBRID_MEETING_CUE.search(query) is not None and (
+            _HYBRID_COMPARE.search(query) is not None
+            or _WEB_INTENT.search(query) is not None
+            or needs_current_fact(query)
+        ))
+        or (
+            meeting
+            and (_HYBRID_COMPARE.search(query) is not None or _WEB_INTENT.search(query) is not None)
+        )
+    ):
+        return "hybrid"
+    if meeting:
+        return "meeting"
+    if car_topic:
+        return "car"
+    return "meeting"
 
 
 def is_car_question(query: str, hits: list[Chunk]) -> bool:

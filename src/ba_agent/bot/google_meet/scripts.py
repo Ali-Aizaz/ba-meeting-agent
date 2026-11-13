@@ -457,6 +457,20 @@ PAGE_OBSERVER_JS = r"""
     window.__baCaptionQueue = [];
     return queued;
   };
+  window.__baPollAll = () => {
+    scan();
+    captionSnapshot();
+    chatNodes();
+    const captions = window.__baCaptionQueue.slice();
+    window.__baCaptionQueue = [];
+    const chats = window.__baChatQueue.slice();
+    window.__baChatQueue = [];
+    return {
+      captions,
+      chats,
+      hasChatRoot: Boolean(chatRoot()),
+    };
+  };
 
   function startRootObserver() {
     scan();

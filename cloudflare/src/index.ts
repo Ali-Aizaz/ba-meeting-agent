@@ -1,4 +1,4 @@
-import { Container } from "@cloudflare/containers";
+import { Container, type StopParams } from "@cloudflare/containers";
 
 // Secrets are read from the Worker env at start. Values stay in `wrangler secret put`.
 declare global {
@@ -34,6 +34,8 @@ const INSTANCE_GET_TIMEOUT_MS = 30_000;
 const PORT_READY_TIMEOUT_MS = 120_000;
 const STOP_WAIT_TIMEOUT_MS = 10_000;
 const STOP_POLL_INTERVAL_MS = 500;
+const STATUS_CACHE_TTL_MS = 1_500;
+const IDLE_STOP_DELAY_SECONDS = 900;
 const STORAGE_MEET_URL_KEY = "meet_url";
 const STORAGE_ENV_SIG_KEY = "env_sig";
 const WORKER_BUILD_SIG = "v10";
@@ -65,6 +67,7 @@ export class BaContainer extends Container<Env> {
   enableInternet = true;
 
   private lastMonitorError: string | null = null;
+  private lastStatusCache: { at: number; payload: Record<string, unknown> } | null = null;
 
   constructor(ctx: ConstructorParameters<typeof Container<Env>>[0], env: Env) {
     super(ctx, env);
@@ -167,6 +170,7 @@ export class BaContainer extends Container<Env> {
         Boolean(this.ctx.container?.running) &&
         (state.status === "running" || state.status === "healthy");
       if (!isRunning) {
+        this.lastStatusCache = null;
         return jsonResponse({
           meeting_id: "",
           captions_enabled: false,
@@ -175,8 +179,14 @@ export class BaContainer extends Container<Env> {
           meet_url: this.envVars.MEET_URL || "",
         });
       }
+      if (this.lastStatusCache && Date.now() - this.lastStatusCache.at < STATUS_CACHE_TTL_MS) {
+        return jsonResponse(this.lastStatusCache.payload);
+      }
       try {
-        const statusRes = await super.fetch(new Request("http://localhost/status"));
+        const port = this.ctx.container!.getTcpPort(this.defaultPort);
+        const statusRes = await port.fetch("http://localhost/status", {
+          signal: AbortSignal.timeout(3000),
+        });
         if (statusRes.ok) {
           const payload = (await statusRes.json()) as Record<string, unknown>;
           const stage = typeof payload.stage === "string" ? payload.stage : "";
@@ -185,11 +195,14 @@ export class BaContainer extends Container<Env> {
             typeof payload.meet_url === "string" && payload.meet_url
               ? payload.meet_url
               : this.envVars.MEET_URL || "";
-          return jsonResponse({
+          const responsePayload: Record<string, unknown> = {
             ...payload,
             idle: isIdle,
             meet_url: activeMeetUrl,
-          });
+          };
+          this.lastStatusCache = { at: Date.now(), payload: responsePayload };
+          await this.maybeScheduleIdleStop(isIdle);
+          return jsonResponse(responsePayload);
         }
       } catch {
         // Fall through to idle response if container port is not yet ready.
@@ -224,10 +237,28 @@ export class BaContainer extends Container<Env> {
       );
     }
     const response = await super.fetch(request);
+    if (request.method === "GET" && url.pathname === "/status" && response.ok) {
+      try {
+        const payload = (await response.clone().json()) as Record<string, unknown>;
+        const stage = typeof payload.stage === "string" ? payload.stage : "";
+        const isIdle = Boolean(payload.idle) || stage === "idle";
+        await this.maybeScheduleIdleStop(isIdle);
+      } catch {
+        // Ignore non-JSON status payloads.
+      }
+    }
     return withCors(response);
   }
 
   private async handleJoin(request: Request): Promise<Response> {
+    const startedAt = Date.now();
+    this.lastStatusCache = null;
+    try {
+      this.deleteSchedules("stopIfIdle");
+    } catch {
+      // Ignore if container schedule storage is unavailable.
+    }
+
     let body: { url?: unknown; restart?: unknown; force?: unknown };
     try {
       body = (await request.json()) as { url?: unknown; restart?: unknown; force?: unknown };
@@ -249,6 +280,12 @@ export class BaContainer extends Container<Env> {
       (state.status === "running" || state.status === "healthy");
     const switchedMeeting = Boolean(previousUrl && previousUrl !== normalizedUrl && isRunning);
     const needsRestart = Boolean(body.restart) || previousEnvSig !== currentEnvSig;
+    logEvent("info", "join_requested", {
+      meetUrl: normalizedUrl,
+      coldStart: !isRunning,
+      switchedMeeting,
+      needsRestart,
+    });
 
     await this.ctx.storage.put(STORAGE_MEET_URL_KEY, normalizedUrl);
     await this.ctx.storage.put(STORAGE_ENV_SIG_KEY, currentEnvSig);
@@ -268,6 +305,12 @@ export class BaContainer extends Container<Env> {
         );
         if (joinRes.ok) {
           const payload = (await joinRes.json()) as Record<string, unknown>;
+          logEvent("info", "join_succeeded", {
+            meetUrl: normalizedUrl,
+            coldStart: false,
+            switched: switchedMeeting,
+            durationMs: Date.now() - startedAt,
+          });
           return jsonResponse({
             ...payload,
             ok: true,
@@ -287,6 +330,12 @@ export class BaContainer extends Container<Env> {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const detail = this.lastMonitorError ? ` (monitor: ${this.lastMonitorError})` : "";
+      logEvent("error", "join_failed", {
+        meetUrl: normalizedUrl,
+        coldStart: !isRunning,
+        durationMs: Date.now() - startedAt,
+        error: `${message}${detail}`,
+      });
       return jsonResponse(
         { ok: false, error: `Failed to start container: ${message}${detail}` },
         500,
@@ -303,6 +352,12 @@ export class BaContainer extends Container<Env> {
       // Status server just came up; return join metadata even if status parse fails.
     }
 
+    logEvent("info", "join_succeeded", {
+      meetUrl: normalizedUrl,
+      coldStart: !isRunning,
+      switched: switchedMeeting,
+      durationMs: Date.now() - startedAt,
+    });
     return jsonResponse({
       ...statusPayload,
       ok: true,
@@ -311,7 +366,77 @@ export class BaContainer extends Container<Env> {
     });
   }
 
+  override onStop(params: StopParams): void | Promise<void> {
+    this.lastStatusCache = null;
+    try {
+      this.deleteSchedules("stopIfIdle");
+    } catch {
+      // Ignore if schedule table is not initialized.
+    }
+    logEvent("info", "container_stopped", {
+      exitCode: params.exitCode,
+      reason: params.reason,
+    });
+    return super.onStop(params);
+  }
+
+  override onError(error: unknown): unknown {
+    logEvent("error", "container_error", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return super.onError(error);
+  }
+
+  async stopIfIdle(): Promise<void> {
+    if (!this.ctx.container?.running) {
+      return;
+    }
+    try {
+      const statusRes = await this.ctx.container
+        .getTcpPort(this.defaultPort)
+        .fetch("http://localhost/status", { signal: AbortSignal.timeout(3000) });
+      if (statusRes.ok) {
+        const payload = (await statusRes.json()) as Record<string, unknown>;
+        const stage = typeof payload.stage === "string" ? payload.stage : "";
+        const isIdle = Boolean(payload.idle) || stage === "idle";
+        if (!isIdle) {
+          logEvent("info", "idle_stop_aborted_active", { stage });
+          return;
+        }
+      }
+    } catch {
+      // Proceed to stop if status port does not answer when checking idle timer.
+    }
+    this.lastStatusCache = null;
+    logEvent("info", "idle_stop_executed", { delaySeconds: IDLE_STOP_DELAY_SECONDS });
+    try {
+      await this.stop("SIGTERM");
+    } catch {
+      // Container already stopped.
+    }
+  }
+
+  private async maybeScheduleIdleStop(isIdle: boolean): Promise<void> {
+    try {
+      if (isIdle) {
+        const existing = await this.listSchedules("stopIfIdle");
+        if (existing.length === 0) {
+          await this.schedule(IDLE_STOP_DELAY_SECONDS, "stopIfIdle", {});
+          logEvent("info", "idle_stop_scheduled", { delaySeconds: IDLE_STOP_DELAY_SECONDS });
+        }
+      } else {
+        this.deleteSchedules("stopIfIdle");
+      }
+    } catch (error) {
+      logEvent("warn", "idle_stop_schedule_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   private async stopForNextMeeting(): Promise<void> {
+    this.lastStatusCache = null;
+    logEvent("info", "container_stop_for_next_meeting", {});
     try {
       await this.stop("SIGTERM");
     } catch {
@@ -392,6 +517,25 @@ function withCors(response: Response): Response {
     statusText: response.statusText,
     headers,
   });
+}
+
+function logEvent(
+  level: "info" | "warn" | "error",
+  event: string,
+  fields: Record<string, unknown> = {},
+): void {
+  const line = JSON.stringify({
+    ts: new Date().toISOString(),
+    event,
+    ...fields,
+  });
+  if (level === "error") {
+    console.error(line);
+  } else if (level === "warn") {
+    console.warn(line);
+  } else {
+    console.log(line);
+  }
 }
 
 function jsonResponse(payload: Record<string, unknown>, status = 200): Response {

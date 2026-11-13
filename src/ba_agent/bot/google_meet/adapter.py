@@ -277,7 +277,9 @@ class GoogleMeetAdapter:
                     logger.info("google sign-in succeeded for %s", email)
                     return True
                 not_now = self.page.locator(
-                    'button:has-text("Not now"), [role="button"]:has-text("Not now"), span:has-text("Not now")'
+                    'button:has-text("Not now"), '
+                    '[role="button"]:has-text("Not now"), '
+                    'span:has-text("Not now")'
                 )
                 if await not_now.count() > 0:
                     try:
@@ -480,14 +482,60 @@ class GoogleMeetAdapter:
             )
         )
 
+    async def _send_chat_lines(self, target, text: str) -> None:
+        lines = text.split("\n")
+        if len(lines) == 1:
+            await target.fill(lines[0])
+            await target.press("Enter")
+            return
+        await target.fill("")
+        keyboard = getattr(self.page, "keyboard", None)
+        insert_text = getattr(keyboard, "insert_text", None)
+        for index, line in enumerate(lines):
+            if line:
+                if callable(insert_text):
+                    await insert_text(line)
+                else:
+                    await target.type(line)
+            if index < len(lines) - 1:
+                await target.press("Shift+Enter")
+        await target.press("Enter")
+
+    @staticmethod
+    async def _is_target_ready(target) -> bool:
+        vis_fn = getattr(target, "is_visible", None)
+        if callable(vis_fn):
+            try:
+                if not await vis_fn():
+                    return False
+            except Exception:
+                return False
+        en_fn = getattr(target, "is_enabled", None)
+        if callable(en_fn):
+            try:
+                if not await en_fn():
+                    return False
+            except Exception:
+                return False
+        return True
+
     async def post_chat(self, text: str, reason: PostReason) -> bool:
         if not isinstance(reason, PostReason):
             return False
         async with self._ui_lock:
             try:
-                await self._dismiss_incall_overlays()
                 box = self._chat_box()
-                if await box.count() == 0:
+                if await box.count() > 0 and await self._is_target_ready(box.first):
+                    try:
+                        target = box.first
+                        await target.click(timeout=1500)
+                        await self._send_chat_lines(target, text)
+                        self.chat_enabled = True
+                        return True
+                    except Exception:
+                        pass
+                await self._dismiss_incall_overlays()
+                if await box.count() == 0 or not await self._is_target_ready(box.first):
                     opener = self.page.get_by_role("button", name=CHAT_BUTTON).or_(
                         self.page.locator(
                             f'button[aria-label*="{CHAT_BUTTON}" i], '
@@ -501,17 +549,10 @@ class GoogleMeetAdapter:
                             await opener.first.click(force=True, timeout=1500)
                         deadline = time.monotonic() + 5.0
                         while time.monotonic() < deadline:
-                            if await box.count() > 0:
-                                try:
-                                    if (
-                                        await box.first.is_visible()
-                                        and await box.first.is_enabled()
-                                    ):
-                                        break
-                                except Exception:
-                                    break
+                            if await box.count() > 0 and await self._is_target_ready(box.first):
+                                break
                             await asyncio.sleep(0.2)
-                if await box.count() == 0:
+                if await box.count() == 0 or not await self._is_target_ready(box.first):
                     self.chat_enabled = False
                     logger.info("chat_enabled: false")
                     await self.screenshot("chat-disabled")
@@ -522,23 +563,7 @@ class GoogleMeetAdapter:
                     await target.click(timeout=2500)
                 except Exception:
                     await target.click(force=True, timeout=1500)
-                lines = text.split("\n")
-                if len(lines) == 1:
-                    await target.fill(lines[0])
-                    await target.press("Enter")
-                    return True
-                await target.fill("")
-                keyboard = getattr(self.page, "keyboard", None)
-                insert_text = getattr(keyboard, "insert_text", None)
-                for index, line in enumerate(lines):
-                    if line:
-                        if callable(insert_text):
-                            await insert_text(line)
-                        else:
-                            await target.type(line)
-                    if index < len(lines) - 1:
-                        await target.press("Shift+Enter")
-                await target.press("Enter")
+                await self._send_chat_lines(target, text)
                 return True
             except Exception:
                 logger.warning("post_chat failed", exc_info=True)
@@ -595,10 +620,8 @@ class GoogleMeetAdapter:
         )
         return self._chat.consume(nodes or [])
 
-    async def drain_caption_frames(self) -> list[list[CaptionRow]]:
-        raw = await self.page.evaluate(
-            "() => window.__baDrainCaptions ? window.__baDrainCaptions() : []"
-        )
+    @staticmethod
+    def _parse_caption_frames(raw: list[dict] | None) -> list[list[CaptionRow]]:
         frames: list[list[CaptionRow]] = []
         for item in raw or []:
             frames.append(
@@ -612,6 +635,35 @@ class GoogleMeetAdapter:
                 ]
             )
         return frames
+
+    async def drain_poll_state(self) -> tuple[list[list[CaptionRow]], list[ChatMessage]]:
+        """Single-IPC combined poll returning caption frames and new chat messages."""
+        payload = await self.page.evaluate(
+            "() => window.__baPollAll ? window.__baPollAll() : null"
+        )
+        if not isinstance(payload, dict):
+            return await self.drain_caption_frames(), await self.collect_chat()
+        has_root = bool(payload.get("hasChatRoot", True))
+        if (
+            not has_root
+            and self.page is not None
+            and (self.page.url or "").startswith("https://meet.google.com/")
+            and time.monotonic() - self._last_chat_open_attempt > 10.0
+        ):
+            self._last_chat_open_attempt = time.monotonic()
+            try:
+                await self.ensure_chat_open()
+            except Exception:
+                pass
+        frames = self._parse_caption_frames(payload.get("captions"))
+        chats = self._chat.consume(payload.get("chats") or [])
+        return frames, chats
+
+    async def drain_caption_frames(self) -> list[list[CaptionRow]]:
+        raw = await self.page.evaluate(
+            "() => window.__baDrainCaptions ? window.__baDrainCaptions() : []"
+        )
+        return self._parse_caption_frames(raw)
 
     async def other_participant_count(self) -> int | None:
         if (self.page.url or "").startswith("https://meet.google.com/"):

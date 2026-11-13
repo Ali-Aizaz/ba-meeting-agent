@@ -12,10 +12,10 @@ SEARCH_INSTRUCTION = (
 )
 
 
-def build_search_request(query: str, model: str) -> dict:
+def build_search_request(query: str, model: str | None = None) -> dict:
     """The body is the car question plus one instruction. Nothing else is attached."""
+    del model  # Passed for backwards compatibility; search uses the client's active model.
     return {
-        "model": model,
         "input": f"{query.strip()}\n\n{SEARCH_INSTRUCTION}",
         "tools": [{"type": "web_search"}],
     }

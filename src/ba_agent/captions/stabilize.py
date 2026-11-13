@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from html.parser import HTMLParser
 
+from ba_agent.speakers import normalize_speaker
 from ba_agent.trigger.match import match_wake, split_completed_wake_sentence
 
 
@@ -41,11 +43,37 @@ class Stabilizer:
         self,
         stable_ms: int = 800,
         bot_names: tuple[str, ...] = ("techsol ba", "ba assistant", "you"),
+        *,
+        wake_stable_ms: int | None = None,
+        aliases: dict[str, str] | None = None,
+        extra_phrases: list[str] | None = None,
     ) -> None:
         self.stable_s = stable_ms / 1000
+        if wake_stable_ms is not None:
+            self.wake_stable_s = wake_stable_ms / 1000
+        elif stable_ms >= 600:
+            self.wake_stable_s = min(stable_ms, 450) / 1000
+        else:
+            self.wake_stable_s = self.stable_s
         self.bot_names = bot_names
+        self.aliases = aliases or {}
+        self.extra_phrases = extra_phrases or []
         self.open: dict[str, _Open] = {}
         self.committed: dict[str, tuple[str, str]] = {}
+
+    def has_open_row_for(
+        self,
+        speaker: str,
+        aliases: dict[str, str] | None = None,
+    ) -> bool:
+        alias_map = aliases if aliases is not None else self.aliases
+        target = normalize_speaker(speaker, alias_map).lower()
+        if not target:
+            return False
+        return any(
+            bool(row.text.strip()) and normalize_speaker(row.speaker, alias_map).lower() == target
+            for row in self.open.values()
+        )
 
     def push_frame(self, rows: list[CaptionRow], now: float) -> list[RawCaption]:
         committed: list[RawCaption] = []
@@ -104,7 +132,12 @@ class Stabilizer:
                 if row_id not in seen:
                     committed.append(self._commit(self.open[row_id], now))
         for row_id, current in list(self.open.items()):
-            if now - current.last_change + 1e-9 >= self.stable_s:
+            threshold_s = self.stable_s
+            if self.wake_stable_s < self.stable_s and current.text.rstrip().endswith("?"):
+                wm = match_wake(current.text, extra_phrases=self.extra_phrases)
+                if wm is not None and len(wm.question.split()) >= 3:
+                    threshold_s = self.wake_stable_s
+            if now - current.last_change + 1e-9 >= threshold_s:
                 committed.append(self._commit(current, now))
         return committed
 
@@ -173,6 +206,13 @@ def _same_utterance(previous: str, new: str) -> bool:
         if len(prev_words[0]) >= 3 and len(new_words[0]) >= 3:
             if new_words[0].startswith(prev_words[0]) or prev_words[0].startswith(new_words[0]):
                 return True
+        if len(prev_words) >= 3 and len(new_words) >= len(prev_words) - 1:
+            prev_ended = previous.rstrip().endswith((".", "?", "!"))
+            if not prev_ended or " ".join(prev_words[1:]) in " ".join(new_words):
+                if prev_words[1:] == new_words[1:] or prev_words[1:] == new_words[2:]:
+                    return True
+                if SequenceMatcher(None, prev_words, new_words).ratio() >= 0.75:
+                    return True
     return False
 
 
