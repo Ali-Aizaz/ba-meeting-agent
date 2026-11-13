@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from collections.abc import Callable
@@ -12,10 +13,14 @@ from rapidfuzz import fuzz
 from ba_agent.models import TriggerEvent
 from ba_agent.trigger.match import (
     _POST_WAKE_COMMENTARY_PREFIXES,
+    WakeMatch,
+    _clean_question,
     _starts_with_any,
     _truncate_question_len,
     match_wake,
 )
+
+_CHAT_DIRECT_PREFIX = re.compile(r"^@?ba\s*[,:\-—]\s*(.+)$", re.I)
 
 _IMMEDIATE_ONE_WORD = {
     "leave",
@@ -163,6 +168,12 @@ class TriggerDetector:
             threshold=self.fuzzy_threshold,
             extra_phrases=self.extra_phrases,
         )
+        if match is None and source == "chat":
+            direct = _CHAT_DIRECT_PREFIX.match(text.strip())
+            if direct:
+                q_clean = _clean_question(direct.group(1))
+                if q_clean:
+                    match = WakeMatch(question=q_clean, phrase="ba:")
         if match is None:
             return events
         words = match.question.split()

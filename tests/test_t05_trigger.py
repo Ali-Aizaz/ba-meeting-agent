@@ -212,4 +212,23 @@ def test_bare_wake_adaptive_pause_expires_early_when_speaker_silent() -> None:
     assert merged[0].question == "what is regenerative braking"
 
 
+def test_chat_direct_prefixes_and_at_mentions() -> None:
+    detector = TriggerDetector(pause_wait_s=5, dedup_window_s=3, followup_window_s=20)
+    ev1 = detector.on_line("Ali", "BA: what are our open tasks?", "chat", 1.0)
+    assert len(ev1) == 1
+    assert ev1[0].question == "what are our open tasks"
+
+    ev2 = detector.on_line("Ali", "@BA Assistant what is a hybrid?", "chat", 5.0)
+    assert len(ev2) == 1
+    assert ev2[0].question == "what is a hybrid"
+
+    ev3 = detector.on_line("Ali", "@TechSol BA summarize the meeting", "chat", 10.0)
+    assert len(ev3) == 1
+    assert ev3[0].question == "summarize the meeting"
+
+    # Non-addressed speech with "BA" stays silent
+    assert detector.on_line("Ali", "the BA team will review this", "speech", 15.0) == []
+
+
+
 

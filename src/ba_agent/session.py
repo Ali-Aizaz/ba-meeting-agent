@@ -224,6 +224,13 @@ async def _run_single_meeting(
             async def _warm_llm() -> None:
                 try:
                     await warm_up_fn()
+                    auth_err = getattr(llm, "auth_error", None)
+                    if auth_err:
+                        status.last_error = str(auth_err)
+                        status.record_activity(
+                            "OpenAI API key expired/invalid — using local & Notion fallback",
+                            "warn",
+                        )
                 except Exception:
                     pass
 
@@ -336,10 +343,15 @@ async def _run_single_meeting(
                 break
             attempts += 1
             try:
+                status.record_activity("Joining Google Meet call…", "working")
                 await adapter.join(url)
                 joined = True
                 status.stage = "in_call"
-                status.last_error = ""
+                status.last_error = str(getattr(llm, "auth_error", "") or "")
+                status.record_activity(
+                    "Admitted to Google Meet — enabling captions & chat…",
+                    "working",
+                )
                 status.captions_enabled = await adapter.enable_captions()
                 await adapter.ensure_chat_open()
                 if notion and notion.configured and not notion.summary_url:
@@ -355,6 +367,10 @@ async def _run_single_meeting(
                         consent_posted = True
                         store.set_meta("consent_posted", "1")
                 status.chat_enabled = adapter.chat_enabled
+                status.record_activity(
+                    "TechSol BA ready — listening for 'Hey BA' ✓",
+                    "success",
+                )
                 logger.info(
                     "captions_enabled: %s chat_enabled: %s",
                     status.captions_enabled,
@@ -588,38 +604,58 @@ async def _loops(
     async def captions() -> None:
         if use_combined_poll:
             while not adapter.ended_event.is_set():
-                frames, chat_msgs = await adapter.drain_poll_state()
-                now = adapter.meeting_seconds()
-                push_frames = getattr(pump, "push_frames", None)
-                if callable(push_frames):
-                    committed = push_frames(frames, now)
-                else:
-                    committed = await pump.poll(now)
-                for raw in committed:
-                    await on_caption(raw)
-                if chat_msgs:
-                    await process_chat_batch(chat_msgs)
-                for event in trigger.tick(adapter.meeting_seconds()):
-                    trigger_queue.put_nowait(event)
+                try:
+                    frames, chat_msgs = await adapter.drain_poll_state()
+                    now = adapter.meeting_seconds()
+                    push_frames = getattr(pump, "push_frames", None)
+                    if callable(push_frames):
+                        committed = push_frames(frames, now)
+                    else:
+                        committed = await pump.poll(now)
+                    for raw in committed:
+                        await on_caption(raw)
+                    if chat_msgs:
+                        await process_chat_batch(chat_msgs)
+                    for event in trigger.tick(adapter.meeting_seconds()):
+                        trigger_queue.put_nowait(event)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.warning("combined poll iteration failed", exc_info=True)
                 await asyncio.sleep(0.22)
             return
         while not adapter.ended_event.is_set():
-            if await adapter.meeting_closed():
-                adapter.ended_event.set()
-                return
-            for raw in await pump.poll(adapter.meeting_seconds()):
-                await on_caption(raw)
+            try:
+                if await adapter.meeting_closed():
+                    adapter.ended_event.set()
+                    return
+                for raw in await pump.poll(adapter.meeting_seconds()):
+                    await on_caption(raw)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("caption poll iteration failed", exc_info=True)
             await asyncio.sleep(0.3)
 
     async def chats() -> None:
         while not adapter.ended_event.is_set():
-            await process_chat_batch(await adapter.collect_chat())
+            try:
+                await process_chat_batch(await adapter.collect_chat())
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("chat poll iteration failed", exc_info=True)
             await asyncio.sleep(0.3)
 
     async def ticks() -> None:
         while not adapter.ended_event.is_set():
-            for event in trigger.tick(adapter.meeting_seconds()):
-                trigger_queue.put_nowait(event)
+            try:
+                for event in trigger.tick(adapter.meeting_seconds()):
+                    trigger_queue.put_nowait(event)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("trigger tick iteration failed", exc_info=True)
             await asyncio.sleep(0.5)
 
     async def replies() -> None:
@@ -627,7 +663,12 @@ async def _loops(
             event = await trigger_queue.get()
             if event is None or adapter.ended_event.is_set():
                 return
-            await agent.handle(event)
+            try:
+                await agent.handle(event)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("agent.handle failed for trigger %s", event.trigger_id)
 
     async def alone() -> None:
         alone_for = 0.0

@@ -326,7 +326,9 @@
         candidates.push((captionRoot.innerText || "").trim());
       }
     }
-    const chatNodes = document.querySelectorAll("[jsname='dTKtvb'], [data-message-text], .oIy2qc");
+    const chatNodes = document.querySelectorAll(
+      "[jsname='dTKtvb'], [data-message-text], .oIy2qc, .beTDc",
+    );
     if (chatNodes.length > 0) {
       const lastChat = chatNodes[chatNodes.length - 1];
       candidates.push(

@@ -133,21 +133,50 @@ PAGE_OBSERVER_JS = r"""
       || document.querySelector("[data-ba-captions]");
   }
 
-  function chatRoot() {
-    return document.querySelector("[data-ba-chat-log]")
-      || document.querySelector('[jsname="xySENc"]')
-      || document.querySelector('.Ge9Kpc[aria-live="polite"]')
-      || document.querySelector('[aria-live="polite"]:not([data-mdc-dom-announce])');
+  function isInViewport(el) {
+    if (!el || typeof el.getBoundingClientRect !== "function") return true;
+    const rect = el.getBoundingClientRect();
+    if (!rect || rect.width < 4 || rect.height < 4) return false;
+    const vw = window.innerWidth || 1280;
+    const vh = window.innerHeight || 720;
+    return rect.left < vw - 5 && rect.right > 5 && rect.top < vh - 5 && rect.bottom > 5;
   }
 
-  function extractChatSender(group) {
+  function chatRoot() {
+    const fake = document.querySelector("[data-ba-chat-log]");
+    if (fake) return fake;
+    const known = document.querySelector('[jsname="xySENc"], .Ge9Kpc, .z38b6');
+    if (known && isInViewport(known)) return known;
+    const box = document.querySelector(
+      'textarea[aria-label*="Send a message" i], ' +
+      'textarea[placeholder*="Send a message" i], ' +
+      'input[aria-label*="Send a message" i], ' +
+      'input[placeholder*="Send a message" i], ' +
+      '[role="textbox"][aria-label*="Send a message" i], ' +
+      '[contenteditable="true"][aria-label*="Send a message" i], ' +
+      'textarea[aria-label*="Message everyone" i], ' +
+      'input[aria-label*="Message everyone" i], ' +
+      '[role="textbox"][aria-label*="Message everyone" i], ' +
+      'textarea[jsname="YPqjbf"], input[jsname="YPqjbf"]'
+    );
+    if (box && isInViewport(box)) {
+      return (
+        (box.closest &&
+          box.closest('[role="complementary"], aside, .R3Gmyc, .WUFI9b, [data-panel-id]')) ||
+        box.parentElement
+      );
+    }
+    return null;
+  }
+
+  function extractChatSender(group, messageText) {
     if (!group) return "";
     if (group.classList && group.classList.contains("ydIQ1d")) {
       return "You";
     }
     let sender = (group.getAttribute("data-sender-name") || "").trim();
     if (sender) return sender;
-    const badge = group.querySelector(".poVWob, .yt1Zbd, .zWGUib");
+    const badge = group.querySelector(".poVWob, .yt1Zbd, .zWGUib, .jc992b");
     if (badge) {
       sender = (badge.innerText || "").trim();
       if (sender) return sender;
@@ -166,14 +195,39 @@ PAGE_OBSERVER_JS = r"""
         return "You";
       }
     }
+    const lines = (group.innerText || "")
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    for (const line of lines) {
+      if (messageText && (line === messageText || messageText.startsWith(line))) break;
+      if (/^\d{1,2}:\d{2}(\s*[AP]M)?$/i.test(line)) continue;
+      if (/^(pin message|hover to react|keep_outline|more_vert)$/i.test(line)) continue;
+      if (line.length <= 60) return line;
+      break;
+    }
     return "";
+  }
+
+  function findChatMessageNodes(scope) {
+    let found = Array.from(scope.querySelectorAll("[jsname='dTKtvb']"));
+    if (found.length === 0) {
+      found = Array.from(scope.querySelectorAll("[data-message-text], .oIy2qc, .beTDc"));
+    }
+    if (found.length === 0) {
+      found = Array.from(
+        scope.querySelectorAll("[data-message-id]:not(button):not([role='button'])")
+      );
+    }
+    return found;
   }
 
   function chatNodes() {
     const log = document.querySelector("[data-ba-chat-log]");
     if (log) {
       log.querySelectorAll("[data-chat-message]").forEach((node) => {
-        const id = node.getAttribute("data-chat-message") || node.innerText;
+        const rawId = node.getAttribute("data-chat-message") || node.innerText;
+        const id = `fake:${rawId}`;
         if (seenChat.has(id)) return;
         seenChat.add(id);
         window.__baChatQueue.push({
@@ -183,14 +237,14 @@ PAGE_OBSERVER_JS = r"""
       });
       return;
     }
-    const root = chatRoot() || document;
-    let nodes = Array.from(root.querySelectorAll("[jsname='dTKtvb']"));
+    const root = chatRoot();
+    let nodes = root ? findChatMessageNodes(root) : [];
     if (nodes.length === 0) {
-      nodes = Array.from(root.querySelectorAll("[data-message-text], .oIy2qc"));
+      nodes = findChatMessageNodes(document);
     }
-    if (nodes.length === 0) {
+    if (nodes.length === 0 && root) {
       nodes = Array.from(
-        root.querySelectorAll("[data-message-id]:not(button):not([role='button'])")
+        root.querySelectorAll('[aria-live="polite"] div[dir="auto"], .z38b6 div[dir="auto"]')
       );
     }
     const now = Date.now();
@@ -203,7 +257,7 @@ PAGE_OBSERVER_JS = r"""
           : node;
       const wrapper =
         (textTarget.closest &&
-          textTarget.closest("[data-message-id], .RLrADb, .Be7nke")) ||
+          textTarget.closest("[data-message-id], .RLrADb, .Be7nke, .beTDc")) ||
         textTarget;
       const idEl =
         wrapper.getAttribute && wrapper.getAttribute("data-message-id")
@@ -214,12 +268,13 @@ PAGE_OBSERVER_JS = r"""
       const msgId =
         (idEl && idEl.getAttribute && idEl.getAttribute("data-message-id")) || "";
       if (!wrapper.dataset.baChatId) {
-        wrapper.dataset.baChatId = String(++nextChatId);
+        wrapper.dataset.baChatId = `local:${++nextChatId}`;
       }
-      const localId = wrapper.dataset.baChatId;
-      if (seenChat.has(localId) || (msgId && seenChat.has(msgId))) {
-        seenChat.add(localId);
-        if (msgId) seenChat.add(msgId);
+      const localKey = wrapper.dataset.baChatId;
+      const msgKey = msgId ? `mid:${msgId}` : "";
+      if (seenChat.has(localKey) || (msgKey && seenChat.has(msgKey))) {
+        seenChat.add(localKey);
+        if (msgKey) seenChat.add(msgKey);
         return;
       }
       const text = (
@@ -228,17 +283,20 @@ PAGE_OBSERVER_JS = r"""
         ""
       ).trim();
       if (!text) return;
-      seenChat.add(localId);
-      if (msgId) seenChat.add(msgId);
-      const group = textTarget.closest("[data-sender-name], .Ss4fHf, .GDhqjd");
-      const sender = extractChatSender(group);
+      seenChat.add(localKey);
+      if (msgKey) seenChat.add(msgKey);
+      const group = textTarget.closest("[data-sender-name], .Ss4fHf, .GDhqjd, .Ch8c7d");
+      const isSelfGroup = Boolean(
+        group && group.classList && group.classList.contains("ydIQ1d")
+      );
+      const sender = extractChatSender(group, text);
       const dedupKey = `${sender}\0${text}`;
       const prevAt = recentChatText.get(dedupKey);
       if (prevAt !== undefined && now - prevAt < 2500) {
         return;
       }
       recentChatText.set(dedupKey, now);
-      window.__baChatQueue.push({sender, text});
+      window.__baChatQueue.push({sender, text, is_self: isSelfGroup});
     });
   }
 

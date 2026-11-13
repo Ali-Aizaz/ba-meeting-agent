@@ -37,6 +37,19 @@ def _is_model_rejection(exc: Exception) -> bool:
     return status in (400, 404) or "model" in str(exc).lower()
 
 
+def _is_auth_error(exc: Exception) -> bool:
+    status = getattr(exc, "status_code", None)
+    if status == 401:
+        return True
+    low = str(exc).lower()
+    return (
+        "expired_secret_key" in low
+        or "invalid_api_key" in low
+        or "incorrect api key" in low
+        or "error code: 401" in low
+    )
+
+
 class OpenAIResponsesClient:
     def __init__(
         self,
@@ -62,6 +75,7 @@ class OpenAIResponsesClient:
         self._base_url = base_url
         self._client = None
         self._fallback_model: str | None = None
+        self.auth_error: str | None = None
         self._no_reasoning_models: set[str] = set()
         self._web_cache: dict[str, tuple[float, WebResult]] = {}
         self._web_http: httpx.AsyncClient | None = None
@@ -120,9 +134,13 @@ class OpenAIResponsesClient:
             res = retrieve(chosen_model)
             if inspect.isawaitable(res):
                 await res
+            self.auth_error = None
             logger.info("llm warm_up ok model=%s", chosen_model)
         except Exception as exc:
-            if chosen_model != _FALLBACK_MODEL and _is_model_rejection(exc):
+            if _is_auth_error(exc):
+                self.auth_error = "OpenAI API key is invalid or expired (HTTP 401)"
+                logger.error("llm warm_up authentication failed (check BA_LLM__API_KEY): %s", exc)
+            elif chosen_model != _FALLBACK_MODEL and _is_model_rejection(exc):
                 logger.warning(
                     "warm_up model %s rejected (%s); falling back to %s",
                     chosen_model,
@@ -217,6 +235,9 @@ class OpenAIResponsesClient:
                     **retry_extra,
                 )
             else:
+                if _is_auth_error(exc):
+                    self.auth_error = "OpenAI API key is invalid or expired (HTTP 401)"
+                    logger.error("OpenAI respond failed with HTTP 401 (check BA_LLM__API_KEY)")
                 raise
         logger.info(
             "llm respond model=%s web_search=%s duration_ms=%d",

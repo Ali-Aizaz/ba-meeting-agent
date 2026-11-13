@@ -586,3 +586,123 @@ def test_cross_layer_meet_url_canonicalization_and_extension_js_syntax() -> None
             )
             assert proc.returncode == 0, f"{js_file} syntax error: {proc.stderr}"
     assert (FIXTURES / "fake_meet.html").exists()
+
+
+@pytest.mark.asyncio
+async def test_combined_poll_loop_survives_transient_error_and_surfaces_llm_401(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import datetime, timezone
+
+    from ba_agent.llm.openai_client import OpenAIResponsesClient
+
+    clear_secrets(monkeypatch)
+    settings = load_settings()
+    settings.llm.api_key = SecretStr("sk-expired-test-key")
+    settings.notion.enabled = False
+    settings.captions.stable_ms = 0
+    settings.storage.sqlite_path = str(tmp_path / "combined.db")
+
+    # Verify OpenAIResponsesClient.warm_up records auth_error on HTTP 401 expired_secret_key
+    client_401 = OpenAIResponsesClient(api_key="sk-expired", model="gpt-4o-mini")
+
+    async def _fail_retrieve(_model: str):
+        raise RuntimeError(
+            "Error code: 401 - {'error': {'code': 'expired_secret_key', "
+            "'message': 'Your API key has expired.'}}"
+        )
+
+    from types import SimpleNamespace
+
+    client_401._client = SimpleNamespace(models=SimpleNamespace(retrieve=_fail_retrieve))
+    await client_401.warm_up()
+    assert client_401.auth_error is not None
+    assert "401" in client_401.auth_error
+
+    class _ExpiredLLM:
+        auth_error: str | None = None
+
+        async def warm_up(self) -> None:
+            self.auth_error = "OpenAI API key is invalid or expired (HTTP 401)"
+
+        async def respond(self, *_args, **_kwargs):
+            raise RuntimeError("Error code: 401 - expired_secret_key")
+
+        async def search_cars(self, _q: str) -> WebResult:
+            return WebResult()
+
+    monkeypatch.setattr("ba_agent.session.build_llm", lambda _s: _ExpiredLLM())
+
+    class _CombinedPollAdapter:
+        def __init__(self) -> None:
+            self.ended_event = asyncio.Event()
+            self.chat_enabled = True
+            self._left = False
+            self._admitted_at: float | None = 0.0
+            self.posted: list[tuple[str, PostReason]] = []
+            self._polls = 0
+
+        async def join(self, _url: str) -> None:
+            self._admitted_at = 0.0
+
+        async def enable_captions(self) -> bool:
+            return True
+
+        async def ensure_chat_open(self) -> bool:
+            return True
+
+        async def meeting_closed(self) -> bool:
+            return self._polls >= 3
+
+        def meeting_seconds(self) -> float:
+            return float(self._polls)
+
+        async def drain_poll_state(self) -> tuple[list[list[CaptionRow]], list[ChatMessage]]:
+            self._polls += 1
+            if self._polls == 1:
+                raise RuntimeError("Execution context was destroyed")
+            if self._polls == 2:
+                return (
+                    [],
+                    [
+                        ChatMessage(
+                            sender="Unknown speaker",
+                            text="BA: what is regenerative braking?",
+                            wall_time=datetime(2026, 11, 13, 9, 0, tzinfo=timezone.utc),
+                            is_self=False,
+                        )
+                    ],
+                )
+            self.ended_event.set()
+            return [], []
+
+        async def drain_caption_frames(self) -> list[list[CaptionRow]]:
+            return []
+
+        async def post_chat(self, text: str, reason: PostReason) -> bool:
+            self.posted.append((text, reason))
+            return True
+
+        async def other_participant_count(self) -> int:
+            return 1
+
+        async def leave(self) -> None:
+            self._left = True
+
+        async def close(self, force: bool = False) -> None:
+            del force
+            self._left = True
+
+    adapter = _CombinedPollAdapter()
+    status = StatusState()
+    await _run_single_meeting(
+        settings,
+        adapter,  # type: ignore[arg-type]
+        status,
+        "https://meet.google.com/gya-vqog-xwn",
+    )
+    replies = [txt for txt, r in adapter.posted if r is PostReason.REPLY]
+    assert any("hybrid.md" in txt or "ev.md" in txt for txt in replies)
+    assert "401" in status.last_error
+

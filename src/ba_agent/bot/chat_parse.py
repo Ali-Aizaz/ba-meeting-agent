@@ -68,6 +68,7 @@ class ChatReader:
         nodes: list[dict],
         wall_time: datetime | None = None,
     ) -> list[ChatMessage]:
+        self_names = {"you", self.bot_name.strip().lower(), "techsol ba", "ba assistant"}
         messages = messages_from_nodes(
             nodes,
             bot_name=self.bot_name,
@@ -75,11 +76,12 @@ class ChatReader:
             last_sender=self.last_sender,
         )
         if messages:
-            self.last_sender = messages[-1].sender
+            last = messages[-1]
+            self.last_sender = "" if last.is_self else last.sender
         elif nodes:
             sender = (nodes[-1].get("sender") or "").strip()
             if sender:
-                self.last_sender = sender
+                self.last_sender = "" if sender.lower() in self_names else sender
         return messages
 
 
@@ -91,20 +93,27 @@ def messages_from_nodes(
 ) -> list[ChatMessage]:
     now = wall_time or datetime.now(UTC)
     self_names = {"you", bot_name.strip().lower(), "techsol ba", "ba assistant"}
+    if last_sender.strip().lower() in self_names:
+        last_sender = ""
     messages: list[ChatMessage] = []
     for node in nodes:
-        sender = (node.get("sender") or "").strip() or last_sender
+        raw_sender = (node.get("sender") or "").strip()
+        node_is_self = bool(node.get("is_self"))
+        sender = raw_sender or ("" if node_is_self else last_sender)
         text = " ".join((node.get("text") or "").split())
-        if sender:
+        is_self = node_is_self or (sender.strip().lower() in self_names)
+        if is_self:
+            last_sender = ""
+        elif sender:
             last_sender = sender
         if not text:
             continue
         messages.append(
             ChatMessage(
-                sender=sender or "Unknown speaker",
+                sender=sender or ("You" if is_self else "Unknown speaker"),
                 text=text,
                 wall_time=now,
-                is_self=sender.strip().lower() in self_names,
+                is_self=is_self,
             )
         )
     return messages

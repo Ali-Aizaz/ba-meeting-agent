@@ -423,3 +423,230 @@ async def test_post_chat_opens_collapsed_drawer_when_hidden_box_exists() -> None
     assert sent == ["Grounded reply (src: ev.md)"]
 
 
+def test_chat_reader_does_not_poison_human_messages_after_bot_self_post() -> None:
+    from ba_agent.bot.chat_parse import ChatReader
+
+    reader = ChatReader(bot_name="TechSol BA")
+    # 1. Bot posts opening consent message ("You")
+    consent_batch = reader.consume([{"sender": "You", "text": "Hi — I'm the TechSol BA."}])
+    assert consent_batch[0].is_self is True
+
+    # 2. Human sends chat message whose updated Meet DOM group lacked a matched sender class ("")
+    human_batch = reader.consume([{"sender": "", "text": "Hey BA, what is a hybrid?"}])
+    assert len(human_batch) == 1
+    assert human_batch[0].is_self is False
+    assert human_batch[0].sender == "Unknown speaker"
+
+
+@pytest.mark.asyncio
+async def test_post_chat_detects_offscreen_transformed_drawer_and_clicks_send_fallback() -> None:
+    from ba_agent.bot.google_meet.adapter import GoogleMeetAdapter
+
+    drawer_open = {"value": False}
+    sent_via_button: list[str] = []
+    current_val = {"text": ""}
+
+    class _OffscreenThenOpenTarget:
+        async def is_visible(self) -> bool:
+            # CSS translateX(100%) drawer stays "visible" to DOM layout even when off-screen
+            return True
+
+        async def is_enabled(self) -> bool:
+            return True
+
+        async def bounding_box(self) -> dict[str, float]:
+            return (
+                {"x": 920.0, "y": 640.0, "width": 320.0, "height": 40.0}
+                if drawer_open["value"]
+                else {"x": 1320.0, "y": 640.0, "width": 320.0, "height": 40.0}
+            )
+
+        async def click(self, **_kwargs) -> None:
+            if not drawer_open["value"]:
+                raise TimeoutError("element is outside of the viewport")
+
+        async def fill(self, text: str, **_kwargs) -> None:
+            current_val["text"] = text
+
+        async def press(self, _key: str) -> None:
+            # Simulate Meet build where Enter alone leaves text unsent until Send button click
+            return None
+
+        async def input_value(self) -> str:
+            return current_val["text"]
+
+    class _FakeBox:
+        first = _OffscreenThenOpenTarget()
+
+        async def count(self) -> int:
+            return 1
+
+    class _FakeSendBtn:
+        @property
+        def first(self):
+            return self
+
+        async def count(self) -> int:
+            return 1
+
+        async def click(self, **_kwargs) -> None:
+            sent_via_button.append(current_val["text"])
+            current_val["text"] = ""
+
+    class _FakeOpener:
+        @property
+        def first(self):
+            return self
+
+        def or_(self, _other):
+            return self
+
+        async def count(self) -> int:
+            return 1
+
+        async def click(self, **_kwargs) -> None:
+            drawer_open["value"] = True
+
+    class _FakePage:
+        def get_by_role(self, *_args, **_kwargs):
+            return _FakeOpener()
+
+        def locator(self, selector: str, *_args, **_kwargs):
+            if "SoqoBf" in selector:
+                return _FakeSendBtn()
+            return _FakeOpener()
+
+    adapter = GoogleMeetAdapter(_guest_settings(), profile_dir=Path("/tmp/ba-unused"))
+    adapter.page = _FakePage()  # type: ignore[assignment]
+    adapter._chat_box = lambda: _FakeBox()  # type: ignore[method-assign]
+
+    async def _noop_overlays() -> None:
+        return None
+
+    adapter._dismiss_incall_overlays = _noop_overlays  # type: ignore[method-assign]
+    ok = await adapter.post_chat("Hybrid reply (src: hybrid.md)", PostReason.REPLY)
+    assert ok is True
+    assert drawer_open["value"] is True
+    assert sent_via_button == ["Hybrid reply (src: hybrid.md)"]
+
+    # Bot's own posted text is tagged is_self even if Meet renders a custom Google account name
+    from ba_agent.models import ChatMessage
+
+    echoed = [
+        ChatMessage(
+            sender="Ali Personal",
+            text="Hybrid reply (src: hybrid.md)",
+            wall_time=datetime.now(UTC),
+            is_self=False,
+        )
+    ]
+    marked = adapter._mark_self_messages(echoed)
+    assert marked[0].is_self is True
+
+
+@pytest.mark.asyncio
+async def test_incall_admission_and_show_captions_and_polite_region_isolation(
+    fake_meet_url: str, tmp_path: Path, monkeypatch
+) -> None:
+    clear_secrets(monkeypatch)
+    settings = _guest_settings()
+    adapter = await _join_or_skip(settings, fake_meet_url, tmp_path)
+    try:
+        # Simulate updated Google Meet DOM:
+        # 1) Rename captions button to "Show captions" -> "Hide captions"
+        # 2) Prepend a non-chat [aria-live="polite"] banner before a Meet [jsname="dTKtvb"] node
+        await adapter.page.evaluate(
+            """() => {
+              const oldLog = document.querySelector('[data-ba-chat-log]');
+              if (oldLog) oldLog.remove();
+
+              const politeToast = document.createElement('div');
+              politeToast.setAttribute('aria-live', 'polite');
+              politeToast.textContent = 'Ali joined the call';
+              document.body.prepend(politeToast);
+
+              const panel = document.createElement('aside');
+              const group = document.createElement('div');
+              group.className = 'Ss4fHf';
+              const header = document.createElement('div');
+              header.textContent = 'Ali';
+              const msg = document.createElement('div');
+              msg.setAttribute('jsname', 'dTKtvb');
+              msg.textContent = 'Hey BA, what is a hybrid?';
+              group.appendChild(header);
+              group.appendChild(msg);
+              panel.appendChild(group);
+              const input = document.querySelector('textarea[aria-label*="Send a message"]');
+              if (input) panel.appendChild(input);
+              document.getElementById('incall').appendChild(panel);
+
+              const capBtn = document.getElementById('captions-btn');
+              capBtn.setAttribute('aria-label', 'Show captions');
+              capBtn.addEventListener('click', () => {
+                capBtn.setAttribute('aria-label', 'Hide captions');
+              });
+            }"""
+        )
+        assert await adapter._is_admitted_in_call(is_real_meet=True) is True
+        assert await adapter.enable_captions() is True
+        _frames, chats = await adapter.drain_poll_state()
+        assert any(c.text == "Hey BA, what is a hybrid?" and not c.is_self for c in chats)
+    finally:
+        await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_google_login_rejection_aborts_immediately_Even_with_stale_cookies() -> None:
+    from pydantic import SecretStr
+
+    from ba_agent.bot.google_meet.adapter import GoogleMeetAdapter
+
+    settings = _guest_settings()
+    settings.meeting.google_email = "bot@example.com"
+    settings.meeting.google_password = SecretStr("secret-pass")
+
+    navigated: list[str] = []
+
+    class _EmptyLocator:
+        @property
+        def first(self):
+            return self
+
+        async def count(self) -> int:
+            return 0
+
+        async def is_visible(self) -> bool:
+            return False
+
+        async def wait_for(self, **_kwargs) -> None:
+            return None
+
+    class _RejectedPage:
+        url = "https://accounts.google.com/v3/signin/rejected"
+
+        async def goto(self, target_url: str, **_kwargs) -> None:
+            navigated.append(target_url)
+            if "accounts.google.com" in target_url:
+                self.url = "https://accounts.google.com/v3/signin/rejected"
+            else:
+                self.url = target_url
+
+        def locator(self, *_args, **_kwargs):
+            return _EmptyLocator()
+
+        async def inner_text(self, _sel: str) -> str:
+            return "Couldn't sign you in — This browser or app may not be secure."
+
+    adapter = GoogleMeetAdapter(settings, profile_dir=Path("/tmp/ba-unused"))
+    adapter.page = _RejectedPage()  # type: ignore[assignment]
+
+    async def _stale_cookies_true() -> bool:
+        return True
+
+    adapter._has_google_auth_cookies = _stale_cookies_true  # type: ignore[method-assign]
+    ok = await adapter._perform_google_login("https://meet.google.com/gya-vqog-xwn")
+    assert ok is False
+    assert adapter._google_login_blocked is True
+
+
+

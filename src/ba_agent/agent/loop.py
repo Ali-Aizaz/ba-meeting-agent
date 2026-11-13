@@ -204,8 +204,14 @@ class AgentLoop:
         try:
             if text:
                 self._emit_activity("Posting reply in Google Meet chat…", "working")
-                await self.post(text, reason, event.trigger_id)
-                if had_error:
+                posted_ok = await self.post(text, reason, event.trigger_id)
+                if posted_ok is False:
+                    logger.warning("chat post failed for trigger %s", event.trigger_id)
+                    self._emit_activity(
+                        f"Could not post reply in Google Meet chat for {event.speaker}",
+                        "error",
+                    )
+                elif had_error:
                     self._emit_activity(f"Error reply posted for {event.speaker}", "error")
                 elif reason is PostReason.CONFIRMATION:
                     self._emit_activity(f"Task saved to Notion for {event.speaker} ✓", "success")
